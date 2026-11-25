@@ -39,6 +39,7 @@ def generate_report(directory, state, artifacts, execution, verdicts):
         "environment": state.get("environment"),
         "environment_retained": state.get("environment_retained", False),
         "environment_cleaned_at": state.get("environment_cleaned_at"),
+        "tmux_cleaned_at": state.get("tmux_cleaned_at"),
         "reproductions": state.get("reproductions", []),
     }
     write_json(directory / "report.json", document)
@@ -99,6 +100,8 @@ def generate_report(directory, state, artifacts, execution, verdicts):
         lines += ["Docker resources are retained. External containers remain externally owned.", ""]
     if state.get("environment_cleaned_at"):
         lines += ["Owned Docker resources cleaned at " + state["environment_cleaned_at"] + ".", ""]
+    if state.get("tmux_cleaned_at"):
+        lines += ["Owned tmux sessions cleaned at " + state["tmux_cleaned_at"] + ".", ""]
     if state.get("reproductions"):
         lines += ["### Reproduction attempts", ""]
         for attempt in state["reproductions"]:

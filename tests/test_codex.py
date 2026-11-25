@@ -1,3 +1,5 @@
+import json
+import subprocess
 import sys
 
 import pytest
@@ -7,6 +9,8 @@ from aaqe.config import Config
 from aaqe.contracts import schema, validate
 from aaqe.errors import AAQEError
 from aaqe.process import run
+
+pytestmark = pytest.mark.usefixtures("tmux_sessions")
 
 
 def test_codex_receives_skill_and_validates_final_output(tmp_path):
@@ -29,6 +33,38 @@ pathlib.Path(output).write_text(json.dumps({"summary":"nothing found", "candidat
     prompt = (tmp_path / "received.txt").read_text()
     assert "check the module" in prompt
     assert "Inputs" in prompt and "Outputs" in prompt
+
+
+def test_codex_runs_in_a_retained_tmux_session_and_announces_attachment(tmp_path):
+    executable = tmp_path / "codex.py"
+    executable.write_text(
+        "import json,pathlib,sys\n"
+        'print("visible stage output", flush=True)\n'
+        'print("visible diagnostic", file=sys.stderr, flush=True)\n'
+        'pathlib.Path(sys.argv[sys.argv.index("--output-last-message")+1]).write_text('
+        'json.dumps({"summary":"done", "candidates":[], "excluded_areas":[]}))\n'
+    )
+    messages = []
+    directory = tmp_path / "stage"
+    artifact = Codex(
+        Config(codex_command=[sys.executable, str(executable)]), progress=messages.append
+    ).invoke("bug-hunter", tmp_path, directory, {})
+    assert artifact["summary"] == "done"
+    metadata = json.loads((directory / "tmux.json").read_text())
+    assert any(metadata["attach_command"] in message for message in messages)
+    pane = subprocess.run(
+        ["tmux", "capture-pane", "-p", "-S", "-", "-t", metadata["session"]],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "visible stage output" in pane
+    assert "visible diagnostic" in pane
+    assert (directory / "stdout.log").read_text() == "visible stage output\n"
+    assert (directory / "stderr.log").read_text() == "visible diagnostic\n"
+    process = json.loads((directory / "process.json").read_text())
+    assert process["returncode"] == 0
+    assert process["argv"][0] == sys.executable
 
 
 def test_invalid_model_output_is_not_accepted(tmp_path):

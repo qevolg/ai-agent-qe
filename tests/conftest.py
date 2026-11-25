@@ -1,6 +1,15 @@
+import json
 import subprocess
 
 import pytest
+
+
+@pytest.fixture
+def tmux_sessions(tmp_path):
+    yield
+    for metadata in tmp_path.rglob("tmux.json"):
+        session = json.loads(metadata.read_text())["session"]
+        subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
 
 
 def git(directory, *args):

@@ -85,7 +85,7 @@ def run_audit(
     execution = {"baseline": [], "tests": []}
     verdicts = []
     runtime = None
-    agent = agent or Codex(config)
+    agent = agent or Codex(config, progress=progress)
     state["environment_retained"] = False
     try:
         progress(

@@ -36,3 +36,18 @@ Native Windows paths and process termination have not been accepted on Windows. 
 No real business product audit is claimed by these checks. Projects must supply their own behavioral references, runnable environments and version-matched software. Reproduction and cleanup of the same run should be performed sequentially.
 
 An attempted independent agent review was unavailable because its service rejected authentication. The implementation received local inspection and regression fixes; an independent review result is not claimed.
+
+## tmux launch update
+
+The tmux launch change was checked locally on Linux with Python 3.12.3 and tmux 3.4:
+
+- `python -m pytest -q`: 62 passed, with the opt-in Docker case skipped.
+- `AAQE_DOCKER_TESTS=1 python -m pytest -q tests/test_docker_smoke.py`: 1 passed using real tmux sessions and Docker containers with deterministic model fixtures.
+- Ruff lint and formatting checks passed; wheel and source distribution built successfully.
+- The built wheel was installed into a temporary directory and exercised from outside the source checkout. Packaged roles/Skills, tmux worker startup and structured stage output passed.
+- `aaqe doctor` found Git, Codex, tmux, Docker Engine and Compose.
+- A real `codex exec` call returned the requested structured output through the tmux worker, and its output was visible in the retained pane. This checks transport and structured output; it does not establish a real product audit.
+
+Real tmux regression cases cover live logs before process exit, retained panes, attach announcements, argument quoting, current caller environment without stale server variables, nonzero exits, missing executables, timeouts with child-process termination, AAQE interruption including progress callbacks, and deletion of an active session. Test-owned tmux sessions are explicitly removed after each check. The updated GitHub Actions configuration installs tmux; this local verification does not claim a new remote CI run.
+
+Stage 7 cleanup is covered with real tmux sessions: only the selected run's recorded sessions are removed after checking their stage-directory ownership; another run's session remains. Cleanup without Docker, repeated cleanup, invalid targets, ownership mismatch, active audits and Docker failure after tmux cleanup are also covered. Stage logs and evidence remain, and `tmux_cleaned_at` is saved in both the run record and report. The Docker integration invokes CLI cleanup and checks removal of all five stage sessions together with the owned Docker environment. An independent read-only review found no actionable issues in this cleanup change.

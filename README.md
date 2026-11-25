@@ -6,7 +6,7 @@
 
 ## 安装
 
-需要 Python 3.11+、Git、已登录的 Codex CLI、Docker Engine / Docker Desktop Linux containers，以及 Docker Compose v2。Codex CLI 需支持 `exec --ephemeral --sandbox read-only --output-schema --output-last-message`。
+需要 Python 3.11+、Git、tmux、已登录的 Codex CLI、Docker Engine / Docker Desktop Linux containers，以及 Docker Compose v2。Codex CLI 需支持 `exec --ephemeral --sandbox read-only --output-schema --output-last-message`。在 Debian/Ubuntu 上可用 `sudo apt-get install tmux` 安装 tmux。
 
 在本仓库根目录执行一次：
 
@@ -15,11 +15,11 @@ python -m pip install .
 aaqe doctor
 ```
 
-安装完成后，可切换到任意需要检查的项目目录运行 `aaqe`。这两条命令适用于 Bash 和 PowerShell。
+安装完成后，可切换到任意需要检查的项目目录运行 `aaqe`。
 
 虚拟环境（venv）仅用于隔离 Python 依赖，不是运行 AAQE 的必要条件；已有环境可以直接使用。如果系统 Python 拒绝直接安装，且已安装 pipx，可改用 `pipx install .`，由它自动管理隔离环境。开发工具本身时才需要可编辑安装 `python -m pip install -e .`。
 
-建议先在 Linux 或 WSL2 + Docker 的开发环境使用；原生 Windows 路径与进程终止逻辑尚需单独验收。
+请在 Linux 或 WSL2 + Docker 的开发环境运行。Windows 用户需在 WSL2 内安装并运行 AAQE、tmux 和 Codex；原生 Windows 不支持此 tmux 启动方式。
 
 ## 输入提示词
 
@@ -50,9 +50,25 @@ aaqe run "审计整个产品，优先检查任务生命周期及各模块之间�
 | 4 Test Developer | 独立 Codex 调用 + Python Patch Gate | 测试补丁、测试清单、补丁检查结果 |
 | 5 Test Validator | Python Docker 执行 + 独立 Codex 调用 | 基线、真实用例结果、独立验证结论 |
 | 6 报告 | Python | Markdown、JSON 和完整运行记录；保留环境 |
-| 7 清理 | 用户显式调用 | 清理本轮拥有的容器、网络和卷；保留报告与 Worktree |
+| 7 清理 | 用户显式调用 | 清理本轮拥有的容器、网络、卷和 tmux 会话；保留报告与 Worktree |
 
 没有候选时在 Stage 2 后生成报告；缺少行为依据或环境条件时保存 blocked 原因。每个到达的 AI 阶段只调用 Codex 一次，不自动进行模型重试。五个 Skill 随 Python 包发布，定义输入、步骤、输出与完成条件。
+
+## 查看 Codex 会话
+
+每个到达的 AI 阶段在独立的 tmux 会话中启动 `codex exec`。AAQE 在终端打印该阶段的连接命令，例如：
+
+```bash
+tmux attach-session -t aaqe-code-explorer-0123456789ab
+```
+
+在同一主机、同一用户的另一个终端执行该命令即可实时查看 Codex 的 JSONL 事件和诊断信息。已在 tmux 内时可用 `tmux switch-client -t SESSION` 切换。使用 tmux 的 prefix 后按 `d` 分离，Codex 会继续运行；默认 prefix 为 `Ctrl+b`，以自己的 tmux 配置为准。
+
+阶段结束后保留 tmux 窗口及滚动历史，可用 `tmux list-sessions` 查找。每个阶段目录的 `tmux.json` 保存会话名和完整 attach 命令；`stdout.log`、`stderr.log` 在运行中持续写入，`process.json` 保存最终退出码与超时状态。tmux 会话属于当前主机，主机或 tmux 服务重启后请查看已保存的日志。
+
+此会话使用 `codex exec`，权限策略仍是 `read-only` 和 `approval_policy="never"`。tmux 提供实时查看，不会开启 Codex TUI 或人工审批。阶段超时或在 AAQE 终端按 `Ctrl+C` 时，会终止正在运行的 Codex 及其进程组，并保留日志和 tmux 窗口。直接删除正在运行的 tmux 会话会中止该阶段。
+
+第七阶段执行 `aaqe cleanup RUN_ID` 会一并删除本轮记录的 tmux 会话及其窗口，保留已写入磁盘的日志。清理会核对会话的阶段目录归属，不影响其他运行或用户自己的 tmux 会话；已手动删除的会话会跳过。也可通过 `tmux kill-session -t SESSION` 提前删除指定会话。
 
 ## 项目配置是可选的
 
@@ -151,7 +167,7 @@ aaqe cleanup RUN_ID
 
 自定义目录使用 `aaqe --state-dir /path/to/runs report RUN_ID` 等形式。报告结束不停止或删除环境；失败和中断也保留已创建的资源。复现直接使用保存的测试与准备步骤，不重新调用 AI。每次复现使用新目录，不覆盖首次失败证据；报告同步追加复现记录，保留首次验证结论。复现前会检查 Worktree 仍处于记录的基准提交。
 
-`cleanup` 仅清理该运行拥有的 Compose 资源，保留镜像缓存、外部容器、报告、测试补丁、分支和 Worktree，并同步报告中的清理状态。清理只使用经过完整性检查的 Compose 快照；快照丢失或改变时拒绝执行。需要时由用户另行管理 Worktree 生命周期。同一个运行的复现和清理请顺序执行。
+`cleanup` 清理该运行拥有的 tmux 会话和 Compose 资源，保留镜像缓存、外部容器、报告、阶段日志、测试补丁、分支和 Worktree，并同步报告中的清理状态。即使在创建 Docker 环境前已结束或受阻，也能清理该轮 tmux 会话；重复执行可安全跳过已删除的会话。审计仍在运行时拒绝清理。Docker 清理只使用经过完整性检查的 Compose 快照；快照丢失或改变时拒绝删除 Docker 资源，已经完成的 tmux 清理状态仍会保存。需要时由用户另行管理 Worktree 生命周期。同一个运行的复现和清理请顺序执行。
 
 运行文件可能包含私有源代码片段、Compose 解析后的环境值和测试日志，保存在本地私有运行目录，不自动提交或上传。
 

@@ -4,13 +4,14 @@ from pathlib import Path
 
 from .contracts import schema, validate
 from .errors import AAQEError
-from .process import run, save_result
 from .state import read_json, write_json
+from .tmux import run_tmux
 
 
 class Codex:
-    def __init__(self, config):
+    def __init__(self, config, *, progress=None):
         self.config = config
+        self.progress = progress
 
     def invoke(self, stage, workspace, directory, inputs):
         directory = Path(directory).resolve()
@@ -53,8 +54,14 @@ class Codex:
         if self.config.model:
             command += ["--model", self.config.model]
         command.append("-")
-        result = run(command, cwd=workspace, timeout=self.config.agent_timeout, input_text=prompt)
-        save_result(result, directory)
+        result = run_tmux(
+            command,
+            cwd=workspace,
+            directory=directory,
+            input_path=directory / "prompt.md",
+            timeout=self.config.agent_timeout,
+            progress=self.progress,
+        )
         if result.returncode:
             raise AAQEError(f"Codex {stage} failed (exit {result.returncode}); see {directory}")
         return validate(stage, read_json(directory / "output.json"))

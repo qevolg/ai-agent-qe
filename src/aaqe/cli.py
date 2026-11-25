@@ -10,6 +10,7 @@ from .errors import AAQEError
 from .process import run
 from .reporting import refresh_report
 from .state import Store, now
+from .tmux import cleanup_tmux
 from .workflow import reproduce, run_audit
 
 
@@ -34,7 +35,7 @@ def parser():
     replay.add_argument("run_id")
     replay.add_argument("--case", dest="case_id")
     cleanup = commands.add_parser(
-        "cleanup", help="Explicitly remove this run's owned Docker environment"
+        "cleanup", help="Explicitly remove this run's owned Docker environment and tmux sessions"
     )
     cleanup.add_argument("run_id")
     environment = commands.add_parser("env", help="Inspect or enter a retained test environment")
@@ -69,6 +70,7 @@ def main(argv=None):
             commands = [
                 ["git", "--version"],
                 [*config.codex_command, "--version"],
+                ["tmux", "-V"],
                 ["docker", "version", "--format", "{{.Server.Version}}"],
                 ["docker", "compose", "version"],
             ]
@@ -89,6 +91,16 @@ def main(argv=None):
                 json.dumps(reproduce(store, state, arguments.case_id), ensure_ascii=False, indent=2)
             )
             return 0
+        if arguments.action == "cleanup":
+            if state.get("status") in ("initializing", "running"):
+                raise AAQEError("Cannot clean resources while the audit is running")
+            cleanup_tmux(directory)
+            state.setdefault("tmux_cleaned_at", now())
+            store.save(state)
+            refresh_report(directory, state)
+            if not state.get("environment_retained") or state.get("environment_cleaned_at"):
+                print("Owned tmux sessions cleaned; reports, branch and worktree retained.")
+                return 0
         if not state.get("workspace") or not state.get("environment"):
             raise AAQEError("This run has no Docker test environment")
         runtime = ComposeEnvironment(
@@ -105,7 +117,9 @@ def main(argv=None):
                 state["environment_retained"] = False
                 store.save(state)
             refresh_report(directory, state)
-            print("Owned Docker resources cleaned; reports, branch and worktree retained.")
+            print(
+                "Owned Docker resources and tmux sessions cleaned; reports, branch and worktree retained."
+            )
             return 0
         if arguments.operation == "status":
             result = runtime.status()

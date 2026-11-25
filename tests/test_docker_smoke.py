@@ -1,12 +1,14 @@
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 from conftest import git
 
+from aaqe.cli import main
 from aaqe.config import Config
 from aaqe.environment import ComposeEnvironment
 from aaqe.state import Store
@@ -14,7 +16,9 @@ from aaqe.workflow import reproduce, run_audit
 
 
 @pytest.mark.skipif(os.environ.get("AAQE_DOCKER_TESTS") != "1", reason="opt-in real Docker test")
-def test_real_docker_workflow_reproduction_and_owned_cleanup(repository, tmp_path):
+def test_real_docker_workflow_reproduction_and_owned_cleanup(
+    repository, tmp_path, tmux_sessions, monkeypatch
+):
     project = Path(__file__).resolve().parents[1]
     shutil.copytree(project / "examples/minimal", repository, dirs_exist_ok=True)
     git(repository, "add", ".")
@@ -39,6 +43,14 @@ def test_real_docker_workflow_reproduction_and_owned_cleanup(repository, tmp_pat
         assert records[0]["junit"]["complete"]
         assert records[0]["junit"]["cases"][0]["status"] == "failed"
         assert records[0]["directory"] != report["execution"]["tests"][0]["directory"]
+        monkeypatch.chdir(tmp_path)
+        assert main(["--state-dir", str(config.state_dir), "cleanup", state["id"]]) == 0
+        saved = Store(config.state_dir).load(state["id"])
+        assert saved["tmux_cleaned_at"]
+        assert saved["environment_cleaned_at"]
+        for metadata in (config.state_dir / state["id"] / "stages").glob("*/tmux.json"):
+            session = json.loads(metadata.read_text())["session"]
+            assert subprocess.run(["tmux", "has-session", "-t", "=" + session]).returncode == 1
     finally:
         if (runtime.env_dir / "ownership.json").exists():
             runtime.cleanup()
