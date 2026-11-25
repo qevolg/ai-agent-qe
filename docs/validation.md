@@ -21,11 +21,17 @@ Regression checks cover production edits, Rust inline test boundaries, path trav
 
 ## Actual model checks
 
-Actual independent `codex exec` calls completed Code Explorer, Bug Hunter and Test Designer on the generic example. The first Test Developer request exposed that strict structured output rejects JSON Schema `uniqueItems`. The model-facing schema now omits this keyword while Python still validates uniqueness; a focused regression test checks both behaviors. The initial run correctly saved a blocked report. A separate compatibility run checks Test Developer and Validator with the corrected schema.
+Actual independent `codex exec` calls completed Code Explorer, Bug Hunter and Test Designer on the generic example. The first Test Developer request exposed that strict structured output rejects JSON Schema `uniqueItems`. The model-facing schema now omits this keyword while Python still validates uniqueness; a focused regression test checks both behaviors. The initial run correctly saved a blocked report.
+
+With the corrected schema, a separate actual Test Developer call produced a valid test-only patch. Docker execution passed the original baseline (exit 0) and ran the new negative-input regression (exit 1) with complete, precisely matched JUnit evidence. The independent actual Validator exceeded the explicit 180-second smoke-test timeout; no actual-model final confirmation is claimed. The normal configurable agent timeout defaults to 1800 seconds. This temporary compatibility environment was explicitly cleaned after the check.
+
+## Published CI
+
+GitHub Actions run [45572301164](https://github.com/qevolg/ai-agent-qe/actions/runs/45572301164) passed on implementation commit `7ca0424d7bf1752f84e1c1309690337ce1ce1d05`: Python 3.11, 3.12 and 3.13 unit/lint/format/build jobs and the real Docker integration job all completed successfully.
 
 ## Limits
 
-Native Windows paths and process termination have not been accepted on Windows. Python 3.11/3.13 coverage is configured in GitHub Actions and is not implied by the local Python 3.12 results. GitHub CI status must be checked on the published commit.
+Native Windows paths and process termination have not been accepted on Windows. The Python version matrix above ran on Ubuntu; these results do not establish native Windows support.
 
 No real business product audit is claimed by these checks. Projects must supply their own behavioral references, runnable environments and version-matched software. Reproduction and cleanup of the same run should be performed sequentially.
 
