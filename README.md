@@ -6,18 +6,20 @@
 
 ## 安装
 
-需要 Python 3.11+、Git、tmux、已登录的 Codex CLI、Docker Engine / Docker Desktop Linux containers，以及 Docker Compose v2。Codex CLI 需支持 `exec --ephemeral --sandbox read-only --output-schema --output-last-message`。在 Debian/Ubuntu 上可用 `sudo apt-get install tmux` 安装 tmux。
+AAQE 现在使用 Rust 实现，运行时需要 Git、tmux、已登录的 Codex CLI、Docker Engine / Docker Desktop Linux containers，以及 Docker Compose v2。Codex CLI 需支持 `exec --ephemeral --sandbox read-only --output-schema --output-last-message`。在 Debian/Ubuntu 上可用 `sudo apt-get install tmux` 安装 tmux。
 
 在本仓库根目录执行一次：
 
 ```bash
-python -m pip install .
+cargo install --path . --locked
 aaqe doctor
 ```
 
 安装完成后，可切换到任意需要检查的项目目录运行 `aaqe`。
 
-虚拟环境（venv）仅用于隔离 Python 依赖，不是运行 AAQE 的必要条件；已有环境可以直接使用。如果系统 Python 拒绝直接安装，且已安装 pipx，可改用 `pipx install .`，由它自动管理隔离环境。开发工具本身时才需要可编辑安装 `python -m pip install -e .`。
+从源码安装需要 Rust 1.88+ 和 Cargo；确保 `~/.cargo/bin` 在 `PATH` 中。也可以执行 `cargo build --release --locked`，将 `target/release/aaqe` 复制到 `PATH` 中的目录。可执行文件内嵌五个阶段的角色、Skill 和 Schema，可以单独复制运行，工具本身无需 Python 或虚拟环境。示例产品及审计目标的测试仍使用各自的语言和依赖。
+
+旧 Python 版用户可卸载原先的包 `python3 -m pip uninstall ai-agent-qe`，再安装 Rust 版，并用 `command -v aaqe` 检查实际入口。现有 `aaqe.yaml`、运行目录及 JSON/Markdown 报告格式继续沿用，已有运行记录可通过 `report`、`reproduce` 和 `cleanup` 使用。
 
 请在 Linux 或 WSL2 + Docker 的开发环境运行。Windows 用户需在 WSL2 内安装并运行 AAQE、tmux 和 Codex；原生 Windows 不支持此 tmux 启动方式。
 
@@ -43,16 +45,16 @@ aaqe run "审计整个产品，优先检查任务生命周期及各模块之间�
 
 | Stage | 执行者 | 产物 |
 |---|---|---|
-| 0 初始化 | Python | 本轮记录、远程基准提交、新分支和 Worktree |
+| 0 初始化 | Rust | 本轮记录、远程基准提交、新分支和 Worktree |
 | 1 Code Explorer | 独立 Codex 调用 | 范围、调用关系、行为证据、现有测试、环境需求 |
 | 2 Bug Hunter | 独立 Codex 调用 | 有来源依据的缺陷候选及覆盖限制 |
 | 3 Test Designer | 独立 Codex 调用 | 场景、预期、目标断言、数据准备和复现条件 |
-| 4 Test Developer | 独立 Codex 调用 + Python Patch Gate | 测试补丁、测试清单、补丁检查结果 |
-| 5 Test Validator | Python Docker 执行 + 独立 Codex 调用 | 基线、真实用例结果、独立验证结论 |
-| 6 报告 | Python | Markdown、JSON 和完整运行记录；保留环境 |
+| 4 Test Developer | 独立 Codex 调用 + Rust Patch Gate | 测试补丁、测试清单、补丁检查结果 |
+| 5 Test Validator | Rust Docker 执行 + 独立 Codex 调用 | 基线、真实用例结果、独立验证结论 |
+| 6 报告 | Rust | Markdown、JSON 和完整运行记录；保留环境 |
 | 7 清理 | 用户显式调用 | 清理本轮拥有的容器、网络、卷和 tmux 会话；保留报告与 Worktree |
 
-没有候选时在 Stage 2 后生成报告；缺少行为依据或环境条件时保存 blocked 原因。每个到达的 AI 阶段只调用 Codex 一次，不自动进行模型重试。五个 Skill 随 Python 包发布，定义输入、步骤、输出与完成条件。
+没有候选时在 Stage 2 后生成报告；缺少行为依据或环境条件时保存 blocked 原因。每个到达的 AI 阶段只调用 Codex 一次，不自动进行模型重试。五个 Skill 内嵌于 Rust 可执行文件，定义输入、步骤、输出与完成条件。
 
 ## 查看 Codex 会话
 
@@ -129,7 +131,7 @@ Runner 必须是持续运行的容器。AAQE 自动为它增加：
 
 ## 生产代码保护和证据
 
-Agent 使用 Codex read-only sandbox，只返回结构化结果。Test Developer 返回统一 diff，由 Python 检查后应用。默认允许测试目录；新增测试辅助路径可通过受信任的 `test_paths` 声明。请不要把整个源码目录声明为纯测试目录。
+Agent 使用 Codex read-only sandbox，只返回结构化结果。Test Developer 返回统一 diff，由 Rust 检查后应用。默认允许测试目录；新增测试辅助路径可通过受信任的 `test_paths` 声明。请不要把整个源码目录声明为纯测试目录。
 
 Rust 混合源码文件支持语法树检查：仅可修改顶层 `#[cfg(test)] mod` 测试区，区外语法必须保持一致。其他语言的混合文件先使用独立测试文件。删除、重命名、二进制、符号链接和文件模式修改被拒绝。Validator 独立检查弱化断言、吞掉异常及只验证 mock 的测试。
 
@@ -174,16 +176,16 @@ aaqe cleanup RUN_ID
 ## 开发与验证
 
 ```bash
-python -m pip install -e '.[dev]'
-python -m pytest -q
-python -m ruff check .
-python -m build
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+cargo build --locked --release
 ```
 
-普通测试使用真实临时 Git 仓库，以及明确标记的脚本化 Codex / Docker 边界替身。真实 Docker 集成测试需显式启用，使用现成的 `python:3.12-slim` 镜像：
+普通 Rust 测试使用真实临时 Git 仓库、真实 tmux 会话，以及明确标记的脚本化 Codex / Docker 边界替身。测试需要 tmux。真实 Docker 集成测试需显式启用，使用现成的 `python:3.12-slim` 镜像；该测试的确定性模型夹具需要宿主机上的 `python3`：
 
 ```bash
-AAQE_DOCKER_TESTS=1 python -m pytest -q tests/test_docker_smoke.py
+cargo test --locked --test workflow real_docker_workflow_reproduction_and_owned_cleanup -- --ignored --nocapture
 ```
 
 这项测试验证真实容器、补丁、JUnit、保留、复现和清理；模型输出是确定性测试夹具，不代表真实 Codex 已审计某个业务产品。测试创建的临时环境会在验证后显式清理。真实产品的 AI 审计还需在对应仓库配置环境后运行。

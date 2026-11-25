@@ -1,0 +1,50 @@
+[package]
+name = "ai-agent-qe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Prompt-driven quality engineering with Codex and retained Docker environments"
+readme = "README.md"
+repository = "https://github.com/qevolg/ai-agent-qe"
+default-run = "aaqe"
+include = [
+  "/Cargo.toml", "/Cargo.lock", "/README.md", "/docs/*.md",
+  "/src/*.rs", "/src/resources/**/*.md", "/src/resources/**/*.json",
+  "/tests/*.rs", "/tests/fixtures/*.json", "/tests/fixtures/scripted_codex.py",
+  "/examples/minimal/*.md", "/examples/minimal/*.yaml", "/examples/minimal/*.py",
+  "/examples/minimal/tests/*.py",
+]
+
+[lib]
+name = "aaqe"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aaqe"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+encoding_rs = "0.8"
+jsonschema = { version = "0.33", default-features = false }
+libc = "0.2"
+regex = "1"
+roxmltree = "0.21"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = "0.9"
+sha2 = "0.10"
+shell-escape = "0.1"
+signal-hook = "0.3"
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true

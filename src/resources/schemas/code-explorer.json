@@ -1,0 +1,116 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": {
+      "type": "string"
+    },
+    "scope": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$"
+          },
+          "path": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "claim": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "line",
+          "claim"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "uncertainties": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "environment": {
+      "type": "object",
+      "properties": {
+        "compose_files": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "runner_service": {
+          "type": "string"
+        },
+        "runner_workdir": {
+          "type": "string"
+        },
+        "external_containers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "readiness_timeout": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "compose_files",
+        "services",
+        "runner_service",
+        "runner_workdir",
+        "external_containers",
+        "readiness_timeout"
+      ],
+      "additionalProperties": false
+    },
+    "baseline": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "minItems": 1
+      }
+    }
+  },
+  "required": [
+    "summary",
+    "scope",
+    "references",
+    "uncertainties",
+    "environment",
+    "baseline"
+  ],
+  "additionalProperties": false
+}
