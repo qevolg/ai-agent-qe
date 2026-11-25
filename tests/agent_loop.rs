@@ -25,6 +25,8 @@ fn repository(directory: &Path) -> PathBuf {
         git(&root, &args).unwrap();
     }
     fs::write(root.join("app.py"), "def value():\n    return 1\n").unwrap();
+    fs::create_dir(root.join("src")).unwrap();
+    fs::write(root.join("src/lib.rs"), "pub fn value() -> i32 { 1 }\n").unwrap();
     for args in [
         vec!["add", "."],
         vec!["commit", "-m", "base"],
@@ -119,6 +121,57 @@ impl AuditAgent for Agent {
             harness.run_stage("test-validator", "independently review")?["status"],
             "completed"
         );
+        if self.mode.starts_with("loss-") {
+            // Fault injection: the committed snapshot still describes a confirmed
+            // first patch, while a killed MCP left a filesystem transition behind.
+            let status = harness.status();
+            let root = PathBuf::from(status["workspace"]["path"].as_str().unwrap());
+            let directory = harness.directory.clone();
+            let previous = status["state"]["applied_patch"].as_str().unwrap();
+            let replacement = "--- /dev/null\n+++ b/tests/test_generated.py\n@@ -0,0 +1,2 @@\n+# replacement\n+assert False\n";
+            aaqe::state::write_json(
+                &directory.join("patch-transition.json"),
+                &json!({"previous":previous,"replacement":if self.mode=="loss-replacement" {json!(replacement)}else{Value::Null}}),
+            )?;
+            if self.mode != "loss-recovered" {
+                let reversed = aaqe::process::run(
+                    &["git".into(), "apply".into(), "--reverse".into(), "-".into()],
+                    Some(&root),
+                    10,
+                    Some(previous),
+                );
+                assert_eq!(reversed.returncode, 0);
+            }
+            if self.mode == "loss-replacement" {
+                aaqe::patchgate::PatchGate::new(
+                    &root,
+                    &harness.config.test_paths,
+                    status["workspace"]["commit"].as_str(),
+                )?
+                .apply(replacement)?;
+                let mut artifact = status["artifacts"]["test-developer"].clone();
+                artifact["patch"] = json!(replacement);
+                aaqe::state::write_json(
+                    &directory.join("artifacts/test-developer.json"),
+                    &artifact,
+                )?;
+                fs::write(directory.join("tests.diff"), replacement)?;
+            } else {
+                fs::remove_file(directory.join("artifacts/bug-hunter.json"))?;
+                fs::remove_file(directory.join("artifacts/test-developer.json"))?;
+                fs::remove_file(directory.join("tests.diff"))?;
+            }
+            bail!("simulated MCP loss during patch transition");
+        }
+        if self.mode == "generated-reference" || self.mode == "line-reference" {
+            let result =
+                harness.run_stage("code-explorer", "review sources at the recorded base")?;
+            assert_eq!(result["status"], "failed", "{result}");
+            assert_eq!(
+                harness.status()["artifacts"]["code-explorer"]["references"][0]["path"],
+                "app.py"
+            );
+        }
         if self.mode == "revisit" {
             assert_eq!(harness.status()["verdicts"][0]["status"], "confirmed");
             harness.run_stage("code-explorer", "check the behavioral oracle again")?;
@@ -145,7 +198,7 @@ impl AuditAgent for Agent {
             assert!(!inputs["execution"]["tests"].as_array().unwrap().is_empty());
             assert!(inputs["instruction"].as_str().unwrap().contains("feedback"));
         }
-        let output = match stage {
+        let mut output = match stage {
             "code-explorer" => {
                 json!({"summary":"scope","scope":["app.py"],"references":[{"id":"ref","path":"app.py","line":1,"claim":"one"}],"uncertainties":[],"environment":{"compose_files":[],"services":[],"runner_service":"runner","runner_workdir":"/workspace","external_containers":[],"readiness_timeout":30},"baseline":[["baseline"]]})
             }
@@ -180,6 +233,20 @@ impl AuditAgent for Agent {
             }
             _ => bail!("unexpected stage"),
         };
+        if self.mode == "line-reference" && stage == "test-developer" {
+            output["patch"] = json!(
+                "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1,4 @@\n pub fn value() -> i32 { 1 }\n+#[cfg(test)]\n+mod tests {\n+}\n"
+            );
+        }
+        if retry && stage == "code-explorer" {
+            if self.mode == "generated-reference" {
+                output["references"][0]["path"] = json!("tests/test_generated.py");
+            }
+            if self.mode == "line-reference" {
+                output["references"][0]["path"] = json!("src/lib.rs");
+                output["references"][0]["line"] = json!(3);
+            }
+        }
         fs::create_dir_all(directory)?;
         aaqe::state::write_json(&directory.join("input.json"), inputs)?;
         aaqe::state::write_json(&directory.join("output.json"), &output)?;
@@ -321,4 +388,52 @@ fn per_role_budget_prevents_reusing_a_stage_window() {
     let (_temp, state, _) = audit("attempt-budget");
     assert_eq!(state["status"], "blocked");
     assert_eq!(state["stages"].as_array().unwrap().len(), 4);
+}
+
+fn assert_transition_recovery(mode: &'static str) {
+    let (_temp, state, directory) = audit(mode);
+    assert_eq!(state["status"], "blocked");
+    let workspace = Path::new(state["workspace"]["path"].as_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(workspace.join("tests/test_generated.py")).unwrap(),
+        "assert False\n"
+    );
+    let artifact = read_json(&directory.join("artifacts/test-developer.json")).unwrap();
+    assert_eq!(artifact["patch"], state["applied_patch"]);
+    assert_eq!(
+        fs::read_to_string(directory.join("tests.diff")).unwrap(),
+        state["applied_patch"].as_str().unwrap()
+    );
+    assert!(directory.join("artifacts/bug-hunter.json").is_file());
+    assert_eq!(
+        read_json(&directory.join("patch-check.json")).unwrap()["accepted"],
+        true
+    );
+    assert_eq!(
+        read_json(&directory.join("report.json")).unwrap()["verdicts"][0]["status"],
+        "confirmed"
+    );
+    assert!(!directory.join("patch-transition.json").exists());
+}
+
+#[test]
+fn loss_after_patch_reversal_recovers_committed_evidence() {
+    assert_transition_recovery("loss-upstream");
+}
+#[test]
+fn loss_after_replacement_application_recovers_committed_evidence() {
+    assert_transition_recovery("loss-replacement");
+}
+#[test]
+fn revised_explorer_cannot_accept_generated_files() {
+    assert_eq!(audit("generated-reference").1["status"], "completed");
+}
+#[test]
+fn revised_explorer_cannot_accept_lines_outside_the_base() {
+    assert_eq!(audit("line-reference").1["status"], "completed");
+}
+
+#[test]
+fn interrupted_recovery_reconciles_aliases_without_reversing_restored_patch() {
+    assert_transition_recovery("loss-recovered");
 }

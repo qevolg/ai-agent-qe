@@ -137,6 +137,10 @@ impl<'a> AuditHarness<'a> {
         );
         ensure!(!interrupted(), "Interrupted by user");
         ensure!(
+            !self.directory.join("patch-transition.json").exists(),
+            "An unfinished patch transition requires recovery before another stage"
+        );
+        ensure!(
             !instruction.trim().is_empty(),
             "A dispatch instruction is required"
         );
@@ -205,7 +209,16 @@ impl<'a> AuditHarness<'a> {
         let inputs = json!({"stage":stage,"attempt":attempt,"instruction":instruction,"prompt":self.state["prompt"],"base_commit":self.state["workspace"]["commit"],"project_config":self.config,"artifacts":self.artifacts,"execution":self.execution,"previous_attempts":self.state["stages"],"artifact_directory":self.directory});
         // The harness also saves boundary inputs/results for non-Codex test agents.
         write_json(&directory.join("input.json"), &inputs)?;
-        let outcome = self.accept(stage, index, &directory, &inputs);
+        let mut outcome = self.accept(stage, index, &directory, &inputs);
+        if outcome.is_err() && self.directory.join("patch-transition.json").exists() {
+            // The snapshot is the commit point. Do not recover from in-memory
+            // values that may have changed before an unsuccessful commit.
+            self.reload()?;
+            if let Err(error) = ignoring_interrupts(|| self.recover_transition()) {
+                outcome =
+                    Err(error.context("Stage failed and its patch transition could not recover"));
+            }
+        }
         let result = match outcome {
             Ok(output) => {
                 json!({"status":"completed","stage":stage,"attempt":attempt,"directory":directory,"artifact":output,"execution":self.execution,"verdicts":self.verdicts})
@@ -247,18 +260,65 @@ impl<'a> AuditHarness<'a> {
                     source.is_file(),
                     "Source reference does not exist: {relative}"
                 );
-                let bytes = fs::read(source)?;
+                let commit = self.state["workspace"]["commit"]
+                    .as_str()
+                    .context("Missing base commit")?;
+                let entry = run(
+                    &[
+                        "git".into(),
+                        "--literal-pathspecs".into(),
+                        "ls-tree".into(),
+                        "-z".into(),
+                        commit.into(),
+                        "--".into(),
+                        relative.into(),
+                    ],
+                    Some(&root),
+                    600,
+                    None,
+                );
+                ensure!(
+                    entry.returncode == 0
+                        && matches!(
+                            entry.stdout.split_whitespace().next(),
+                            Some("100644" | "100755")
+                        ),
+                    "Source reference is not a regular file in the recorded base: {relative}"
+                );
+                let base = run(
+                    &["git".into(), "show".into(), format!("{commit}:{relative}")],
+                    Some(&root),
+                    600,
+                    None,
+                );
+                ensure!(
+                    base.returncode == 0,
+                    "Cannot read source reference at recorded base: {relative}"
+                );
                 ensure!(
                     reference["line"]
                         .as_f64()
                         .context("Invalid reference line")?
-                        <= String::from_utf8_lossy(&bytes).lines().count() as f64,
-                    "Source reference line is outside the file: {relative}"
+                        <= base.stdout.lines().count() as f64,
+                    "Source reference line is outside the recorded base file: {relative}"
                 );
             }
         }
         let gate = self.gate()?;
         gate.verify_worktree()?;
+        let replacement = if index < 3 {
+            Value::Null
+        } else if index == 3 {
+            output["patch"].clone()
+        } else {
+            self.state["applied_patch"].clone()
+        };
+        // Keep this journal until both the authoritative snapshot and all active
+        // file aliases agree. Recovery is safe to repeat after another loss.
+        write_json(
+            &self.directory.join("patch-transition.json"),
+            &json!({"previous":self.state["applied_patch"],"replacement":replacement}),
+        )?;
         if stage == "test-developer" {
             let patch = output["patch"].as_str().unwrap();
             let previous = self.state["applied_patch"].as_str().map(str::to_owned);
@@ -282,6 +342,9 @@ impl<'a> AuditHarness<'a> {
         }
         self.invalidate(index)?;
         self.artifacts[stage] = output.clone();
+        if stage == "test-validator" {
+            self.verdicts = grounded_verdicts(&output, &self.execution);
+        }
         write_json(&directory.join("accepted.json"), &output)?;
         write_json(
             &self
@@ -291,11 +354,9 @@ impl<'a> AuditHarness<'a> {
             &output,
         )?;
         self.save()?;
+        self.recover_transition()?;
         if stage == "test-developer" {
             self.execute(&output, directory)?;
-        }
-        if stage == "test-validator" {
-            self.verdicts = grounded_verdicts(&output, &self.execution);
         }
         Ok(output)
     }
@@ -386,6 +447,81 @@ impl<'a> AuditHarness<'a> {
         self.save()
     }
 
+    fn patch_applied(&self, patch: &str) -> Result<bool> {
+        Ok(run(
+            &[
+                "git".into(),
+                "apply".into(),
+                "--reverse".into(),
+                "--check".into(),
+                "-".into(),
+            ],
+            Some(&self.root()?),
+            600,
+            Some(patch),
+        )
+        .returncode
+            == 0)
+    }
+
+    fn recover_transition(&mut self) -> Result<()> {
+        ignoring_interrupts(|| {
+            let journal = self.directory.join("patch-transition.json");
+            if !journal.exists() {
+                return Ok(());
+            }
+            let transition = read_json(&journal)?;
+            let desired = self.state["applied_patch"].as_str();
+            if !desired
+                .map(|patch| self.patch_applied(patch))
+                .transpose()?
+                .unwrap_or(false)
+            {
+                for candidate in [&transition["replacement"], &transition["previous"]] {
+                    if let Some(patch) = candidate.as_str()
+                        && self.patch_applied(patch)?
+                    {
+                        self.reverse(patch)?;
+                        break;
+                    }
+                }
+                if let Some(patch) = desired {
+                    self.gate()?.apply(patch)?;
+                }
+            }
+            let paths = self.gate()?.verify_worktree()?;
+            // These aliases may have been partially updated before snapshot commit.
+            // Restore them from that snapshot, leaving attempt history untouched.
+            for role in STAGES {
+                let path = self
+                    .directory
+                    .join("artifacts")
+                    .join(format!("{role}.json"));
+                if let Some(artifact) = self.artifacts.get(role) {
+                    write_json(&path, artifact)?;
+                } else if path.exists() {
+                    fs::remove_file(path)?;
+                }
+            }
+            if let Some(patch) = desired {
+                fs::write(self.directory.join("tests.diff"), patch)?;
+                write_json(
+                    &self.directory.join("patch-check.json"),
+                    &json!({"accepted":true,"paths":paths}),
+                )?;
+            } else {
+                for name in ["tests.diff", "patch-check.json"] {
+                    let path = self.directory.join(name);
+                    if path.exists() {
+                        fs::remove_file(path)?;
+                    }
+                }
+            }
+            fs::remove_file(journal)?;
+            Ok(())
+        })
+    }
+
     fn recover_baseline(&mut self) -> Result<()> {
         if let Some(patch) = self.state["baseline_restore_patch"]
             .as_str()
@@ -427,6 +563,11 @@ impl<'a> AuditHarness<'a> {
             "Finish status must be completed or blocked"
         );
         if status == "completed" {
+            ensure!(
+                !self.directory.join("patch-transition.json").exists()
+                    && self.state["baseline_restore_patch"].is_null(),
+                "Patch recovery must finish before audit completion"
+            );
             for stage in &STAGES[..2] {
                 ensure!(
                     self.artifacts.get(*stage).is_some(),
@@ -510,9 +651,20 @@ pub fn audit(
         });
         harness.state["error"] = json!(format!("{error:#}"));
     }
-    if let Err(error) = harness.recover_baseline() {
+    let recovery = harness
+        .recover_baseline()
+        .and_then(|()| harness.recover_transition());
+    if let Err(error) = recovery {
         harness.state["status"] = json!("blocked");
         harness.state["recovery_error"] = json!(format!("{error:#}"));
+        harness.state["error"] = json!(format!("Patch recovery failed: {error:#}"));
+        for verdict in harness.verdicts.as_array_mut().unwrap() {
+            verdict["agent_status"] = verdict["status"].clone();
+            verdict["status"] = json!("blocked");
+            verdict["rationale"] = json!(
+                "Patch recovery failed; retained historical evidence does not establish the current worktree result"
+            );
+        }
     }
     if interrupted() {
         harness.state["status"] = json!("interrupted");

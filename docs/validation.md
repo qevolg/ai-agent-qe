@@ -7,7 +7,7 @@ private stdio MCP harness. Every stage invocation starts a separate retained tmu
 session. Local verification used Linux, Rust 1.88.0 / 1.96.0 / 1.100.0, tmux 3.4,
 Codex CLI 0.172.0, Docker Engine 29.6.1 and Compose v5.3.0.
 
-- Formatting, strict Clippy and the complete ordinary suite passed; 60 tests passed
+- Formatting, strict Clippy and the complete ordinary suite passed; 65 tests passed
   with one opt-in Docker test ignored. Rust 1.88.0 and 1.100.0 were checked too.
 - The real Docker integration passed with a subprocess model fixture acting as
   coordinator and workers. The fixture launches the actual private MCP server,
@@ -35,6 +35,16 @@ The actual Codex check first exposed a default MCP approval restriction under
 `approval_policy="never"`. The coordinator now explicitly approves only its
 private harness server's tools using the Codex server configuration. Worker
 invocations do not receive this server. A fixture regression checks this setting.
+
+The independent whole-branch review found two Important issues: an interrupted
+patch replacement/invalidation could disagree with the committed snapshot, and
+an Explorer retry could reference generated files or lines removed by invalidation.
+Four regressions failed before the fixes and passed after them. A persisted patch
+transition journal now recovers the committed patch and active artifact aliases;
+a fifth regression covers interruption after the patch has already been restored.
+Explorer references must name regular files and valid lines at the recorded base.
+The review reported no Critical or Minor findings. Its execution-validation and
+audit-quality exclusions are covered only to the extent stated above.
 
 One run retains one owned Compose snapshot; changing the discovered environment
 after startup requires a new audit. Stage ordering is a coordinator decision,

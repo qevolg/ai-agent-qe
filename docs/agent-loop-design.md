@@ -21,7 +21,10 @@ artifacts retain immutable per-attempt copies and the existing latest-artifact
 paths. Re-running an upstream stage invalidates downstream active artifacts and
 verdicts without deleting historical evidence. Developer retries replace the
 previous accepted patch against the same recorded base and restore it if the new
-patch is rejected. Each developer attempt runs a fresh baseline and target tests.
+patch is rejected. A persisted transition journal precedes patch changes and active
+artifact invalidation; recovery reconciles the worktree and active files with the
+committed harness snapshot. Explorer references are checked against regular files
+and line bounds at the recorded base, excluding earlier generated tests. Each developer attempt runs a fresh baseline and target tests.
 
 The coordinator has state, run-stage and finish tools. A persistent coordinator
 `codex exec` uses its native tool loop; no model decision loop is recreated in
