@@ -8,14 +8,18 @@
 
 需要 Python 3.11+、Git、已登录的 Codex CLI、Docker Engine / Docker Desktop Linux containers，以及 Docker Compose v2。Codex CLI 需支持 `exec --ephemeral --sandbox read-only --output-schema --output-last-message`。
 
+在本仓库根目录执行一次：
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
+python -m pip install .
 aaqe doctor
 ```
 
-PowerShell 中使用 `.venv\Scripts\Activate.ps1` 激活环境。建议先在 Linux 或 WSL2 + Docker 的开发环境使用；原生 Windows 路径与进程终止逻辑尚需单独验收。
+安装完成后，可切换到任意需要检查的项目目录运行 `aaqe`。这两条命令适用于 Bash 和 PowerShell。
+
+虚拟环境（venv）仅用于隔离 Python 依赖，不是运行 AAQE 的必要条件；已有环境可以直接使用。如果系统 Python 拒绝直接安装，且已安装 pipx，可改用 `pipx install .`，由它自动管理隔离环境。开发工具本身时才需要可编辑安装 `python -m pip install -e .`。
+
+建议先在 Linux 或 WSL2 + Docker 的开发环境使用；原生 Windows 路径与进程终止逻辑尚需单独验收。
 
 ## 输入提示词
 
