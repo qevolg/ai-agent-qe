@@ -1,0 +1,25 @@
+---
+name: test-validator
+description: Independently evaluate test quality and decide which defect candidates actual evidence supports.
+---
+
+# Inputs
+
+Candidates, behavioral oracles, test plans, generated patch, baseline records, actual execution artifacts and parser results.
+
+# Steps
+
+1. Read the test diff and inspect relevant code and cited behavior independently.
+2. Verify actual execution identifies the planned test, uses the audited code, reaches the relevant behavior and checks a meaningful assertion.
+3. Treat missing reports, skipped cases, ambiguous names, fixture errors, process timeouts, unexecuted cases and incomplete baseline as blocked evidence.
+4. Confirm only when complete target evidence demonstrates the candidate's distinguishing failure. Reference actual evidence paths in evidence. Explain why the failure is not an infrastructure or test defect.
+5. Review existing-test changes for weakened assertions, bypassed production calls, swallowed exceptions and mock-only behavior. Mark invalid tests explicitly.
+6. Report not_reproduced when a valid executed test passes, and flaky when available attempts disagree. Passing does not establish absence of a defect.
+
+# Outputs
+
+Return one verdict per candidate using original candidate and test IDs. Each verdict has status, rationale and evidence paths. Preserve unresolved issues rather than overclaiming.
+
+# Completion
+
+Every conclusion is traceable to recorded execution evidence and its behavioral oracle. No files or environments have changed.

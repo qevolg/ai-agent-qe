@@ -1,0 +1,7 @@
+environment:
+  compose_files: [compose.yaml]
+  services: [runner]
+  runner_service: runner
+  runner_workdir: /workspace
+baseline:
+  - [python, run_tests.py, tests/test_baseline.py, "{result_dir}/baseline.xml"]
