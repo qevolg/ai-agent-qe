@@ -118,6 +118,24 @@
         }
       },
       "additionalProperties": false
+    },
+    "loop": {
+      "type": "object",
+      "properties": {
+        "max_stage_calls": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_stage_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeout": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

@@ -5,6 +5,8 @@ pub mod contracts;
 pub mod environment;
 pub mod evidence;
 pub mod gitops;
+pub mod harness;
+pub mod mcp;
 pub mod patchgate;
 pub mod process;
 pub mod reporting;

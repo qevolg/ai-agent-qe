@@ -54,7 +54,7 @@ fn tmux(arguments: &[&str], timeout: u64) -> ProcessResult {
     result
 }
 
-fn executable() -> Result<PathBuf> {
+pub(crate) fn executable() -> Result<PathBuf> {
     let executable = std::env::current_exe()?;
     // Cargo places integration tests in {profile}/deps or, since 1.100,
     // {profile}/build/{package}/{hash}/out. The worker is {profile}/aaqe.
@@ -192,25 +192,32 @@ pub fn run_tmux(
     Ok(result)
 }
 
-pub fn cleanup_tmux(directory: &Path) -> Result<()> {
+// Validate every path and owner before taking any destructive action.
+fn owned_sessions(directory: &Path) -> Result<Vec<(String, PathBuf)>> {
     let directory = directory.canonicalize()?;
     let stages = directory.join("stages");
     if !stages.exists() {
-        return Ok(());
+        return Ok(vec![]);
     }
     let pattern = Regex::new(r"^aaqe-[A-Za-z0-9_-]+-[0-9a-f]{12}$")?;
-    let mut metadata_paths = fs::read_dir(&stages)?
-        .collect::<std::io::Result<Vec<_>>>()?
-        .into_iter()
-        .map(|e| e.path().join("tmux.json"))
-        .filter(|p| p.exists())
-        .collect::<Vec<_>>();
-    metadata_paths.sort();
-    let mut sessions = Vec::new();
-    for metadata in metadata_paths {
-        if !metadata.canonicalize()?.starts_with(&directory) {
-            bail!("Invalid tmux metadata path: {}", metadata.display());
+    let mut pending = vec![stages];
+    let mut metadata_paths = vec![];
+    while let Some(path) = pending.pop() {
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            bail!("Symbolic link in tmux metadata tree: {}", path.display());
         }
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path)? {
+                pending.push(entry?.path());
+            }
+        } else if path.file_name().is_some_and(|name| name == "tmux.json") {
+            metadata_paths.push(path);
+        }
+    }
+    metadata_paths.sort();
+    let mut sessions = vec![];
+    for metadata in metadata_paths {
         let value = read_json(&metadata)?;
         let session = value["session"]
             .as_str()
@@ -222,26 +229,24 @@ pub fn cleanup_tmux(directory: &Path) -> Result<()> {
         ));
     }
     if sessions.is_empty() {
-        return Ok(());
+        return Ok(sessions);
     }
     let listed = tmux(&["list-sessions", "-F", "#{session_name}"], 5);
     if listed.returncode != 0 {
-        let error = &listed.stderr;
         if listed.returncode == 1
-            && (error.contains("no server running") || error.contains("No such file or directory"))
+            && (listed.stderr.contains("no server running")
+                || listed.stderr.contains("No such file or directory"))
         {
-            return Ok(());
+            return Ok(vec![]);
         }
-        bail!("Cannot list tmux sessions: {}", error.trim());
+        bail!("Cannot list tmux sessions: {}", listed.stderr.trim());
     }
-    let listing = &listed.stdout;
-    let existing: HashSet<_> = listing.lines().collect();
-    let mut owned = Vec::new();
+    let existing: HashSet<_> = listed.stdout.lines().collect();
+    let mut owned = vec![];
     for (session, stage) in sessions {
         if !existing.contains(session.as_str()) {
             continue;
         }
-        let target = format!("={session}");
         let owner = tmux(
             &["show-options", "-qv", "-t", &session, "@aaqe_directory"],
             5,
@@ -249,9 +254,30 @@ pub fn cleanup_tmux(directory: &Path) -> Result<()> {
         if owner.returncode != 0 || owner.stdout.trim_end_matches('\n') != stage.to_string_lossy() {
             bail!("Tmux session ownership does not match stage directory: {session}");
         }
-        owned.push(target);
+        owned.push((session, stage));
     }
-    for target in owned {
+    Ok(owned)
+}
+
+pub fn stop_active_workers(directory: &Path) -> Result<()> {
+    for (session, stage) in owned_sessions(directory)? {
+        if !stage.join("finished").exists() {
+            stop_worker(&session, &stage);
+        }
+    }
+    Ok(())
+}
+
+pub fn cleanup_tmux(directory: &Path) -> Result<()> {
+    for (session, stage) in owned_sessions(directory)? {
+        if !stage.join("finished").exists() {
+            stop_worker(&session, &stage);
+        }
+        let target = format!("={session}");
+        // A worker that could not stop gracefully may have removed its session.
+        if tmux(&["has-session", "-t", &target], 5).returncode != 0 {
+            continue;
+        }
         let deleted = tmux(&["kill-session", "-t", &target], 5);
         if deleted.returncode != 0 {
             bail!(
@@ -364,12 +390,21 @@ pub fn worker(directory: &Path) -> Result<()> {
             let stderr_thread = pump(child.stderr.take().unwrap(), stderr_log, true, sender);
             let mut streams = 0;
             let mut status = None;
+            let mut termination: Option<Instant> = None;
             let mut killed = false;
             loop {
                 if !timed_out && started.elapsed() >= Duration::from_secs(timeout) {
                     timed_out = true;
                 }
-                if !killed && (timed_out || interrupted.load(Ordering::Relaxed)) {
+                if termination.is_none() && (timed_out || interrupted.load(Ordering::Relaxed)) {
+                    // Give the MCP harness time to cancel its independent stage and
+                    // restore a temporarily reversed baseline patch before escalation.
+                    unsafe {
+                        libc::killpg(child.id() as i32, libc::SIGTERM);
+                    }
+                    termination = Some(Instant::now());
+                }
+                if !killed && termination.is_some_and(|t| t.elapsed() >= Duration::from_secs(3)) {
                     unsafe {
                         libc::killpg(child.id() as i32, libc::SIGKILL);
                     }

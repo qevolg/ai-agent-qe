@@ -53,6 +53,8 @@ enum Action {
     },
     #[command(name = "__tmux-worker", hide = true)]
     TmuxWorker { directory: PathBuf },
+    #[command(name = "__harness-mcp", hide = true)]
+    HarnessMcp { directory: PathBuf },
 }
 #[derive(Subcommand)]
 enum EnvironmentAction {
@@ -68,10 +70,15 @@ enum EnvironmentAction {
 
 pub fn main() -> i32 {
     let cli = Cli::parse();
+    let mcp = matches!(cli.action, Some(Action::HarnessMcp { .. }));
     match execute(cli) {
         Ok(code) => code,
         Err(error) => {
-            println!("aaqe: {error:#}");
+            if mcp {
+                eprintln!("aaqe: {error:#}");
+            } else {
+                println!("aaqe: {error:#}");
+            }
             2
         }
     }
@@ -82,6 +89,10 @@ fn execute(cli: Cli) -> Result<i32> {
         return Ok(0);
     }
     install_signals()?;
+    if let Some(Action::HarnessMcp { directory }) = &cli.action {
+        crate::mcp::serve(directory)?;
+        return Ok(0);
+    }
     let caller = std::env::current_dir()?;
     let mut config = Config::load(&caller, cli.config.as_deref())?;
     if let Some(directory) = cli.state_dir {

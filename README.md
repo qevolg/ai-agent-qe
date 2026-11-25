@@ -1,6 +1,6 @@
 # AI Agent QE · AAQE
 
-用自然语言描述要检查的产品或模块。AAQE 从远程主分支创建独立 Git Worktree，通过五次独立的 Codex 调用分析代码、寻找缺陷、编写测试，并在真实 Docker 环境中验证。完成后保存报告和环境，供人工复现。
+用自然语言描述要检查的产品或模块。AAQE 从远程主分支创建独立 Git Worktree，由一个常驻的主 Codex 调度五种阶段角色，每次阶段调用都启动新的独立 Codex 窗口，分析代码、寻找缺陷、编写测试，并在真实 Docker 环境中验证。完成后保存报告和环境，供人工复现。
 
 首版是可以执行的通用工具。产品术语、接口约定、业务预期、镜像及测试环境由被审计项目提供；工具及五个阶段 Skill 不内置具体产品知识。
 
@@ -41,7 +41,7 @@ aaqe run "审计整个产品，优先检查任务生命周期及各模块之间�
 
 默认获取 `origin/main`，创建 `aaqe/<run-id>` 分支和独立 Worktree。当前分支与未提交修改不会带入审计，也不会被更改。每轮记录本次获取的提交，后续远程更新不影响复现。网络失败不会静默退回旧代码。
 
-## 工作流
+## 主调度与阶段执行
 
 | Stage | 执行者 | 产物 |
 |---|---|---|
@@ -50,15 +50,21 @@ aaqe run "审计整个产品，优先检查任务生命周期及各模块之间�
 | 2 Bug Hunter | 独立 Codex 调用 | 有来源依据的缺陷候选及覆盖限制 |
 | 3 Test Designer | 独立 Codex 调用 | 场景、预期、目标断言、数据准备和复现条件 |
 | 4 Test Developer | 独立 Codex 调用 + Rust Patch Gate | 测试补丁、测试清单、补丁检查结果 |
-| 5 Test Validator | Rust Docker 执行 + 独立 Codex 调用 | 基线、真实用例结果、独立验证结论 |
+| 5 Test Validator | 独立 Codex 调用 | 根据真实执行证据形成独立验证结论 |
 | 6 报告 | Rust | Markdown、JSON 和完整运行记录；保留环境 |
 | 7 清理 | 用户显式调用 | 清理本轮拥有的容器、网络、卷和 tmux 会话；保留报告与 Worktree |
 
-没有候选时在 Stage 2 后生成报告；缺少行为依据或环境条件时保存 blocked 原因。每个到达的 AI 阶段只调用 Codex 一次，不自动进行模型重试。五个 Skill 内嵌于 Rust 可执行文件，定义输入、步骤、输出与完成条件。
+以上数字表示阶段角色，不是固定执行顺序。初始化完成后，一个主 Codex 在自己的 tmux 窗口内持续运行，通过本地 MCP harness 的 `status`、`run_stage`、`finish` 工具取得结果并决定下一步。Rust 不代替模型选择阶段，负责检查依赖、预算、补丁和证据；每次接受 Developer 补丁后执行真实基线与目标测试，再将执行结果反馈给主窗口。
+
+主窗口可以重试阶段、回到上游重新分析、没有候选时提前结束，或说明阻塞原因。重试必须重新开启独立 Codex，不能复用之前阶段的对话。每次调用带上主窗口指令、当前有效产物、执行证据和历史尝试记录。五个阶段的 Skill、角色和 Schema 继续内嵌在二进制中。
+
+重新接受上游产物后，旧的下游有效产物、执行和验证结论失效，历史 attempt 文件仍保留。Developer 重试提交相对于本轮原始基准的完整替换补丁；补丁被拒绝时恢复上一份测试，接受后重新跑基线和测试。产品失败应作为证据保留；只有证据表明测试或 fixture 有误时才修正测试，不能为了通过而弱化断言或修复生产代码。
+
+结束必须显式调用 `finish`。`completed` 要求当前 Explorer、Hunter 产物；有候选时还要求独立 Validator 和前置产物。模型只输出“已完成”不会使审计完成。缺少行为依据或执行条件时保存 blocked 原因；候选也可单独为 blocked。
 
 ## 查看 Codex 会话
 
-每个到达的 AI 阶段在独立的 tmux 会话中启动 `codex exec`。AAQE 在终端打印该阶段的连接命令，例如：
+主调度和每次 AI 阶段调用都在独立、保留的 tmux 会话中启动 `codex exec`。主窗口在本轮中持续运行，每次阶段重试都新开会话。AAQE 在终端打印该阶段的连接命令，例如：
 
 ```bash
 tmux attach-session -t aaqe-code-explorer-0123456789ab
@@ -66,9 +72,11 @@ tmux attach-session -t aaqe-code-explorer-0123456789ab
 
 在同一主机、同一用户的另一个终端执行该命令即可实时查看 Codex 的 JSONL 事件和诊断信息。已在 tmux 内时可用 `tmux switch-client -t SESSION` 切换。使用 tmux 的 prefix 后按 `d` 分离，Codex 会继续运行；默认 prefix 为 `Ctrl+b`，以自己的 tmux 配置为准。
 
-阶段结束后保留 tmux 窗口及滚动历史，可用 `tmux list-sessions` 查找。每个阶段目录的 `tmux.json` 保存会话名和完整 attach 命令；`stdout.log`、`stderr.log` 在运行中持续写入，`process.json` 保存最终退出码与超时状态。tmux 会话属于当前主机，主机或 tmux 服务重启后请查看已保存的日志。
+Codex CLI 需要支持 stdio MCP 及服务工具授权配置；本次验证版本为 `0.172.0`。
 
-此会话使用 `codex exec`，权限策略仍是 `read-only` 和 `approval_policy="never"`。tmux 提供实时查看，不会开启 Codex TUI 或人工审批。阶段超时或在 AAQE 终端按 `Ctrl+C` 时，会终止正在运行的 Codex 及其进程组，并保留日志和 tmux 窗口。直接删除正在运行的 tmux 会话会中止该阶段。
+主窗口记录在 `stages/coordinator/`。首次阶段调用保留 `stages/<role>/` 路径，第二次开始使用 `stages/<role>/attempts/0002/` 等目录。每次调用结束后保留 tmux 窗口及滚动历史，可用 `tmux list-sessions` 查找。每个阶段目录的 `tmux.json` 保存会话名和完整 attach 命令；`stdout.log`、`stderr.log` 在运行中持续写入，`process.json` 保存最终退出码与超时状态。tmux 会话属于当前主机，主机或 tmux 服务重启后请查看已保存的日志。
+
+此会话使用 `codex exec`，权限策略仍是 `read-only` 和 `approval_policy="never"`。tmux 提供实时查看，不会开启 Codex TUI 或人工审批。主窗口超时或在 AAQE 终端按 `Ctrl+C` 时，会停止主调度和仍在运行的独立阶段进程；单个阶段超时则将失败结果反馈给主窗口，并保留日志和 tmux 窗口。直接删除正在运行的 tmux 会话会中止该阶段。
 
 第七阶段执行 `aaqe cleanup RUN_ID` 会一并删除本轮记录的 tmux 会话及其窗口，保留已写入磁盘的日志。清理会核对会话的阶段目录归属，不影响其他运行或用户自己的 tmux 会话；已手动删除的会话会跳过。也可通过 `tmux kill-session -t SESSION` 提前删除指定会话。
 
@@ -107,9 +115,16 @@ timeouts:
   agent: 1800
   test: 1200
   docker: 1200
+
+loop:
+  max_stage_calls: 20
+  max_stage_attempts: 4
+  timeout: 14400
 ```
 
 源码、参考资料和 Compose 路径默认相对新 Worktree；外部 `env_file` 相对所读取的配置文件解析为绝对路径。配置在创建 Worktree 前从调用目录读取，因此可使用尚未提交的操作配置。私有连接信息放入环境变量或独立 env 文件，不要写入通用 Skill。
+
+`loop.timeout` 是主调度整轮的秒数上限；`timeouts.agent` 限制每次阶段调用。次数预算耗尽后只能结束并说明原因，不能继续创建阶段窗口。
 
 其他设置：`codex.command` 是可执行命令数组，默认 `[codex]`；`codex.model` 可覆盖模型；`state_dir` 可覆盖运行目录。相对 `state_dir` 以配置文件所在目录解析。
 
@@ -135,7 +150,7 @@ Agent 使用 Codex read-only sandbox，只返回结构化结果。Test Developer
 
 Rust 混合源码文件支持语法树检查：仅可修改顶层 `#[cfg(test)] mod` 测试区，区外语法必须保持一致。其他语言的混合文件先使用独立测试文件。删除、重命名、二进制、符号链接和文件模式修改被拒绝。Validator 独立检查弱化断言、吞掉异常及只验证 mock 的测试。
 
-基线执行时临时撤回生成的测试补丁，执行完恢复。Compose 配置在启动时保存为解析后的快照，因此复现/清理不依赖之后被修改的项目定义。
+基线执行时临时撤回生成的测试补丁，执行完恢复。Compose 配置在启动时保存为解析后的快照，因此复现/清理不依赖之后被修改的项目定义。同一轮保持该环境定义；启动后需要更换环境时新建审计，避免遗留旧环境资源。
 
 每个测试必须写出本次运行的 JUnit XML，声明需要匹配的精确 `name` 或 `classname::name`。命令中的 `{result_dir}` 替换为独立的容器输出目录，同时设置 `AAQE_RESULT_DIR`。跳过、未发现、重复身份、报告缺失、错误报告和进程结果不一致均不能支持确认缺陷。完整失败证据仍需 Validator 判断断言和行为依据是否有效。
 
@@ -147,9 +162,12 @@ Rust 混合源码文件支持语法树检查：仅可修改顶层 `#[cfg(test)] 
 
 ```text
 run.json
+harness.json            # 持久化当前状态、有效产物和证据
 worktree/
-stages/<stage>/          # prompt、Skill、Schema、输出与进程记录
-artifacts/              # 经校验的阶段产物
+stages/coordinator/     # 主窗口输入、提示词、日志、tools.jsonl
+stages/<stage>/         # 首次调用的 input、prompt、Skill、Schema、输出与进程记录
+stages/<stage>/attempts/0002/  # 第二次及后续独立调用，含 result 和执行证据
+artifacts/              # 当前有效产物；accepted.json 留在各 attempt 中
 tests.diff
 patch-check.json
 environment/            # Compose 快照、所有权、日志

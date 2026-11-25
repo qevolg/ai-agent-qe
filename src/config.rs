@@ -43,6 +43,12 @@ pub struct Config {
     pub test_timeout: u64,
     #[serde(deserialize_with = "deserialize_timeout")]
     pub docker_timeout: u64,
+    #[serde(deserialize_with = "deserialize_timeout")]
+    pub max_stage_calls: u64,
+    #[serde(deserialize_with = "deserialize_timeout")]
+    pub max_stage_attempts: u64,
+    #[serde(deserialize_with = "deserialize_timeout")]
+    pub run_timeout: u64,
 }
 
 impl Default for Config {
@@ -69,6 +75,9 @@ impl Default for Config {
             agent_timeout: 1800,
             test_timeout: 1200,
             docker_timeout: 1200,
+            max_stage_calls: 20,
+            max_stage_attempts: 4,
+            run_timeout: 14400,
         }
     }
 }
@@ -141,6 +150,15 @@ impl Config {
         }
         if let Some(timeout) = unsigned_integer(&data["timeouts"]["docker"]) {
             config.docker_timeout = timeout;
+        }
+        if let Some(value) = unsigned_integer(&data["loop"]["max_stage_calls"]) {
+            config.max_stage_calls = value;
+        }
+        if let Some(value) = unsigned_integer(&data["loop"]["max_stage_attempts"]) {
+            config.max_stage_attempts = value;
+        }
+        if let Some(value) = unsigned_integer(&data["loop"]["timeout"]) {
+            config.run_timeout = value;
         }
         Ok(config)
     }

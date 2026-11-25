@@ -55,7 +55,7 @@ pub fn generate_report(
     }
     let document = json!({
         "schema_version":"1.0","run_id":state["id"],"generated_at":now(),"prompt":state["prompt"],"status":state["status"],"error":state["error"],
-        "workspace":state["workspace"],"stages":state["stages"],"scope":array(&artifacts["code-explorer"]["scope"]),"uncertainties":array(&artifacts["code-explorer"]["uncertainties"]),
+        "workspace":state["workspace"],"stages":state["stages"],"finish_reason":state["finish_reason"],"coordinator":{"directory":directory.join("stages/coordinator"),"tool_log":directory.join("stages/coordinator/tools.jsonl")},"scope":array(&artifacts["code-explorer"]["scope"]),"uncertainties":array(&artifacts["code-explorer"]["uncertainties"]),
         "excluded_areas":array(&artifacts["bug-hunter"]["excluded_areas"]),"candidates":candidates,"verdicts":verdicts,"execution":execution,"environment":state["environment"],
         "environment_retained":state["environment_retained"].as_bool().unwrap_or(false),"environment_cleaned_at":state["environment_cleaned_at"],"tmux_cleaned_at":state["tmux_cleaned_at"],"reproductions":array(&state["reproductions"])
     });
@@ -77,6 +77,24 @@ pub fn generate_report(
     }
     for scope in strings(&document["scope"]) {
         md.push_str(&format!("- {scope}\n"));
+    }
+    if let Some(reason) = state["finish_reason"].as_str() {
+        md.push_str(&format!("\nCoordinator finish reason: {reason}\n\n"));
+    }
+    if state["loop_started_at"].is_string() {
+        md.push_str("## Stage attempts\n\n| Role | Attempt | Status | Instruction | Directory |\n|---|---|---|---|---|\n");
+        for entry in array(&state["stages"]) {
+            let clean = |v: &Value| text(v).replace('|', "\\|").replace(['\n', '\r'], " ");
+            md.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                clean(&entry["name"]),
+                entry["attempt"],
+                clean(&entry["status"]),
+                clean(&entry["instruction"]),
+                clean(&entry["directory"])
+            ));
+        }
+        md.push_str("\nCoordinator tool decisions: `stages/coordinator/tools.jsonl`. Historical attempt artifacts remain in their stage directories.\n\n");
     }
     md.push_str("\n## Findings\n\n");
     if candidates.is_empty() {

@@ -3,15 +3,61 @@
 import difflib
 import json
 import sys
+import subprocess
 from pathlib import Path
+
+
+def coordinate(arguments, directory):
+    overrides = [arguments[i+1] for i, value in enumerate(arguments[:-1]) if value == "-c"]
+    settings = dict(value.split("=", 1) for value in overrides)
+    assert json.loads(settings.get("mcp_servers.aaqe.default_tools_approval_mode", '"prompt"')) == "approve", "Private harness tools must run with approval_policy=never"
+    command = [json.loads(settings["mcp_servers.aaqe.command"])] + json.loads(settings["mcp_servers.aaqe.args"])
+    child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    sequence = 0
+    def request(method, params):
+        nonlocal sequence
+        sequence += 1
+        child.stdin.write(json.dumps({"jsonrpc":"2.0", "id":sequence, "method":method, "params":params}) + "\n")
+        child.stdin.flush()
+        reply = json.loads(child.stdout.readline())
+        assert "error" not in reply, reply
+        return reply["result"]
+    def tool(name, **arguments):
+        return request("tools/call", {"name":name, "arguments":arguments})
+    request("initialize", {"protocolVersion":"2024-11-05", "capabilities":{}, "clientInfo":{"name":"scripted-codex", "version":"1"}})
+    assert len(request("tools/list", {})["tools"]) == 3
+    assert tool("run_stage", stage="test-developer", instruction="too early")["isError"]
+    assert tool("finish", status="completed", reason="too early")["isError"]
+    stages = ["code-explorer", "bug-hunter", "test-designer", "test-developer", "test-validator"]
+    if "--retry-developer" in arguments:
+        stages.insert(4, "test-developer")
+    if "--loop-test" in arguments or "--cancel-test" in arguments:
+        stages = ["code-explorer", "code-explorer", "bug-hunter"]
+    for stage in stages:
+        result = tool("run_stage", stage=stage, instruction="Inspect current evidence and perform this role independently")
+        if result["isError"]:
+            tool("finish", status="blocked", reason=result["content"][0]["text"])
+            break
+    else:
+        result=tool("finish", status="completed", reason="All current candidates were checked independently")
+        assert not result["isError"], result
+    child.stdin.close()
+    assert child.wait(timeout=10) == 0
+    (directory / "output.json").write_text(json.dumps({"summary":"Audit finished via harness tools"}))
 
 
 def main():
     arguments = sys.argv
     stage_directory = Path(arguments[arguments.index("--output-schema") + 1]).parent
-    stage = stage_directory.name
     inputs = json.loads((stage_directory / "input.json").read_text())
     sys.stdin.read()
+    if stage_directory.name == "coordinator":
+        return coordinate(arguments, stage_directory)
+    stage = inputs.get("stage", stage_directory.name)
+    if "--cancel-test" in arguments:
+        import time
+        (stage_directory / "worker.pid").write_text(str(__import__("os").getpid()))
+        time.sleep(60)
     output = {
         "code-explorer": {
             "summary": "Example scope examined",
@@ -69,6 +115,9 @@ def main():
     }
     if stage == "test-developer":
         source = "import unittest\nfrom app import bounded_value\n\nclass NegativeTest(unittest.TestCase):\n    def test_negative(self):\n        self.assertEqual(bounded_value(-1), 0)\n"
+        if inputs.get("attempt", 1) > 1:
+            assert inputs["execution"]["tests"], "Retry lost prior execution feedback"
+            source = "# Fixture reviewed against actual execution feedback\n" + source
         change = "".join(
             difflib.unified_diff(
                 [],
@@ -111,6 +160,8 @@ def main():
                 }
             ],
         }
+    if "--loop-test" in arguments and stage == "bug-hunter":
+        output[stage]["candidates"] = []
     Path(arguments[arguments.index("--output-last-message") + 1]).write_text(
         json.dumps(output[stage])
     )

@@ -444,7 +444,7 @@ fn interrupting_audit_preserves_report_and_session_and_stops_codex() {
         "interrupted"
     );
     assert!(run.join("report.md").is_file());
-    let stage = run.join("stages/code-explorer");
+    let stage = run.join("stages/coordinator");
     let result = read_json(&stage.join("process.json")).unwrap();
     assert_eq!(result["returncode"], 130);
     assert_eq!(result["timed_out"], false);
@@ -538,4 +538,36 @@ fn stuck_tmux_control_times_out_and_kills_its_descendants_after_interrupt() {
             );
         }
     }
+}
+
+#[test]
+fn cleanup_discovers_nested_attempts_and_refuses_directory_symlinks() {
+    let dir = Sessions::new();
+    let stage = dir.path().join("stages/test-developer/attempts/0002");
+    fs::create_dir_all(&stage).unwrap();
+    let prompt = stage.join("prompt.md");
+    fs::write(&prompt, "").unwrap();
+    run_tmux(&strings(&["true"]), dir.path(), &stage, &prompt, 5, &|_| {}).unwrap();
+    let session = read_json(&stage.join("tmux.json")).unwrap()["session"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    cleanup_tmux(dir.path()).unwrap();
+    assert!(
+        !Command::new("tmux")
+            .args(["has-session", "-t", &session])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let foreign = Sessions::new();
+    std::os::unix::fs::symlink(foreign.path(), dir.path().join("stages/foreign")).unwrap();
+    assert!(
+        cleanup_tmux(dir.path())
+            .unwrap_err()
+            .to_string()
+            .contains("Symbolic")
+    );
+    fs::remove_file(dir.path().join("stages/foreign")).unwrap();
 }

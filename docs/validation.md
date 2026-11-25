@@ -1,5 +1,47 @@
 # Validation
 
+## Codex coordinator agent loop — 2026-11-25
+
+The fixed scheduler has been replaced by one persistent Codex coordinator with a
+private stdio MCP harness. Every stage invocation starts a separate retained tmux
+session. Local verification used Linux, Rust 1.88.0 / 1.96.0 / 1.100.0, tmux 3.4,
+Codex CLI 0.172.0, Docker Engine 29.6.1 and Compose v5.3.0.
+
+- Formatting, strict Clippy and the complete ordinary suite passed; 60 tests passed
+  with one opt-in Docker test ignored. Rust 1.88.0 and 1.100.0 were checked too.
+- The real Docker integration passed with a subprocess model fixture acting as
+  coordinator and workers. The fixture launches the actual private MCP server,
+  dispatches all five roles, retries Developer in a seventh distinct retained
+  session (coordinator plus six stage calls), reruns baseline and failing target,
+  reproduces with a fresh execution directory, then cleans owned resources.
+- Release build and Cargo package verification passed. New roles/resources and the
+  native MCP entrypoint are embedded in the ordinary executable.
+- A bounded actual Codex check successfully called the native MCP `status` and
+  `finish` tools through its own tool loop and tmux transport. It intentionally
+  finished blocked with the reason `native Codex MCP transport smoke complete`.
+  This establishes actual-model tool transport, not an actual-model product audit.
+
+New regressions cover stage prerequisites and explicit completion, retries and
+upstream invalidation, immutable attempt evidence, current evidence paths, call
+and per-role budgets, protected patch replacement/rollback, baseline restoration
+after coordinator loss, MCP protocol/errors, nested ownership-checked cleanup,
+symlink rejection, and coordinator cancellation/timeout with independent stage
+processes. Earlier saved-run, reproduction, production-boundary and JUnit checks
+remain covered. A final message without a successful `finish` cannot mark an audit
+completed. A completed audit may include blocked candidates when evidence gates
+reject their requested conclusions.
+
+The actual Codex check first exposed a default MCP approval restriction under
+`approval_policy="never"`. The coordinator now explicitly approves only its
+private harness server's tools using the Codex server configuration. Worker
+invocations do not receive this server. A fixture regression checks this setting.
+
+One run retains one owned Compose snapshot; changing the discovered environment
+after startup requires a new audit. Stage ordering is a coordinator decision,
+while dependency/evidence checks remain Rust responsibilities. Runtime remains
+Linux/WSL2 with `codex exec` in tmux, without an interactive Codex TUI. Local
+verification does not establish a new remote CI result.
+
 ## Rust 1.100 CI repair — 2026-11-25
 
 GitHub Actions run [45588021885](https://github.com/qevolg/ai-agent-qe/actions/runs/45588021885)

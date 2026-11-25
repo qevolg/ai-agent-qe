@@ -5,7 +5,7 @@ use crate::{
     tmux,
 };
 use anyhow::{Result, bail};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{fs, path::Path};
 
 pub struct Codex {
@@ -45,6 +45,110 @@ impl Codex {
         }
     }
 
+    pub fn coordinate(&self, harness: &mut crate::harness::AuditHarness<'_>) -> Result<()> {
+        let directory = harness.directory.join("stages/coordinator");
+        fs::create_dir_all(&directory)?;
+        let directory = directory.canonicalize()?;
+        let inputs = harness.status();
+        let workspace = std::path::PathBuf::from(
+            inputs["workspace"]["path"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing worktree"))?,
+        );
+        write_json(&directory.join("input.json"), &inputs)?;
+        write_json(
+            &directory.join("schema.json"),
+            &json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}),
+        )?;
+        let role = include_str!("resources/agents/coordinator.md");
+        fs::write(directory.join("SKILL.md"), role)?;
+        fs::write(
+            directory.join("prompt.md"),
+            format!(
+                "{role}\n\nInitial audit status:\n{}",
+                serde_json::to_string_pretty(&inputs)?
+            ),
+        )?;
+        let mut command = self.command(&workspace, &directory);
+        let run_directory = harness.directory.canonicalize()?;
+        for setting in [
+            format!(
+                "mcp_servers.aaqe.command={}",
+                serde_json::to_string(&tmux::executable()?.display().to_string())?
+            ),
+            format!(
+                "mcp_servers.aaqe.args={}",
+                serde_json::to_string(&[
+                    "__harness-mcp",
+                    run_directory
+                        .to_str()
+                        .ok_or_else(|| anyhow::anyhow!("Non UTF-8 run directory"))?
+                ])?
+            ),
+            "mcp_servers.aaqe.required=true".to_owned(),
+            // Trust only this run's private, guarded tools under never-ask policy.
+            "mcp_servers.aaqe.default_tools_approval_mode=\"approve\"".to_owned(),
+            format!(
+                "mcp_servers.aaqe.tool_timeout_sec={}",
+                self.config.run_timeout
+            ),
+        ] {
+            command.extend(["-c".into(), setting]);
+        }
+        command.push("-".into());
+        let result = tmux::run_tmux(
+            &command,
+            &workspace,
+            &directory,
+            &directory.join("prompt.md"),
+            self.config.run_timeout,
+            &|message| eprintln!("{message}"),
+        );
+        // Stage panes use independent process groups; stopping the main pane is insufficient.
+        let stop = tmux::stop_active_workers(&run_directory);
+        let result = result?;
+        stop?;
+        if result.returncode != 0 {
+            bail!(
+                "Codex coordinator failed (exit {}); see {}",
+                result.returncode,
+                directory.display()
+            );
+        }
+        Ok(())
+    }
+
+    fn command(&self, workspace: &Path, directory: &Path) -> Vec<String> {
+        let mut command = self.config.codex_command.clone();
+        command.extend(
+            [
+                "exec",
+                "--ephemeral",
+                "--sandbox",
+                "read-only",
+                "-c",
+                "approval_policy=\"never\"",
+                "--color",
+                "never",
+                "--json",
+                "--cd",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        command.push(workspace.display().to_string());
+        command.extend([
+            "--output-schema".into(),
+            directory.join("schema.json").display().to_string(),
+            "--output-last-message".into(),
+            directory.join("output.json").display().to_string(),
+        ]);
+        if !self.config.model.is_empty() {
+            command.extend(["--model".into(), self.config.model.clone()]);
+        }
+        command
+    }
+
     pub fn invoke(
         &self,
         stage: &str,
@@ -65,32 +169,7 @@ impl Codex {
             serde_json::to_string_pretty(inputs)?
         );
         fs::write(directory.join("prompt.md"), prompt)?;
-        let mut command = self.config.codex_command.clone();
-        command.extend(
-            [
-                "exec",
-                "--ephemeral",
-                "--sandbox",
-                "read-only",
-                "-c",
-                "approval_policy=\"never\"",
-                "--color",
-                "never",
-                "--json",
-                "--cd",
-            ]
-            .into_iter()
-            .map(str::to_owned),
-        );
-        command.push(workspace.display().to_string());
-        command.push("--output-schema".into());
-        command.push(directory.join("schema.json").display().to_string());
-        command.push("--output-last-message".into());
-        command.push(directory.join("output.json").display().to_string());
-        if !self.config.model.is_empty() {
-            command.push("--model".into());
-            command.push(self.config.model.clone());
-        }
+        let mut command = self.command(&workspace, &directory);
         command.push("-".into());
         let result = tmux::run_tmux(
             &command,

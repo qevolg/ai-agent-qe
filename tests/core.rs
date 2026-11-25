@@ -13,15 +13,21 @@ fn config_is_optional_and_resolves_paths_without_reading_secrets() {
     let default = Config::load(directory, None).unwrap();
     assert_eq!(default.remote, "origin");
     assert_eq!(default.branch, "main");
+    assert_eq!(default.max_stage_calls, 20);
+    assert_eq!(default.max_stage_attempts, 4);
+    assert_eq!(default.run_timeout, 14400);
     assert!(default.state_dir.is_absolute());
     fs::write(
         directory.join("aaqe.yaml"),
-        "state_dir: runs\ngit:\n  branch: develop\nenvironment:\n  env_file: private.env\n",
+        "loop: {max_stage_calls: 8, max_stage_attempts: 2, timeout: 3600}\nstate_dir: runs\ngit:\n  branch: develop\nenvironment:\n  env_file: private.env\n",
     )
     .unwrap();
     fs::write(directory.join("private.env"), "PASSWORD=do-not-publish\n").unwrap();
     let loaded = Config::load(directory, None).unwrap();
     assert_eq!(loaded.branch, "develop");
+    assert_eq!(loaded.max_stage_calls, 8);
+    assert_eq!(loaded.max_stage_attempts, 2);
+    assert_eq!(loaded.run_timeout, 3600);
     assert_eq!(loaded.state_dir, directory.join("runs"));
     assert_eq!(
         loaded.environment["env_file"],
@@ -45,6 +51,9 @@ fn invalid_config_is_rejected() {
         "timeouts: {test: 0}",
         "git: {remote: --upload-pack=bad}",
         "codex: {command: []}",
+        "loop: {max_stage_calls: 0}",
+        "loop: {max_stage_attempts: -1}",
+        "loop: {timeout: 0}",
     ] {
         fs::write(temp.path().join("aaqe.yaml"), content).unwrap();
         assert!(Config::load(temp.path(), None).is_err(), "{content}");

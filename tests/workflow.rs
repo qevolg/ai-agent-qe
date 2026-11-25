@@ -41,6 +41,22 @@ struct Agent {
     mode: &'static str,
 }
 impl AuditAgent for Agent {
+    fn coordinate(&self, harness: &mut aaqe::harness::AuditHarness<'_>) -> Result<()> {
+        for stage in aaqe::workflow::STAGES {
+            let result = harness.run_stage(stage, "scripted regression scenario")?;
+            if result["status"] == "failed" {
+                return harness.finish("blocked", result["error"].as_str().unwrap());
+            }
+            if stage == "bug-hunter" && self.mode == "empty" {
+                break;
+            }
+            if stage == "test-designer" && self.mode == "blocked" {
+                return harness.finish("blocked", "All test plans are blocked");
+            }
+        }
+        harness.finish("completed", "scripted scenario complete")
+    }
+
     fn invoke(
         &self,
         stage: &str,
@@ -414,8 +430,7 @@ fn real_docker_workflow_reproduction_and_owned_cleanup() {
     let config_file = root.join("aaqe.yaml");
     let mut config: Value =
         serde_yaml::from_str(&fs::read_to_string(&config_file).unwrap()).unwrap();
-    config["codex"] =
-        json!({"command":["python3",project.join("tests/fixtures/scripted_codex.py")]});
+    config["codex"] = json!({"command":["python3",project.join("tests/fixtures/scripted_codex.py"),"--retry-developer"]});
     fs::write(&config_file, serde_yaml::to_string(&config).unwrap()).unwrap();
     let runs = temp.path().join("runs");
     let output = binary()
@@ -497,7 +512,18 @@ fn real_docker_workflow_reproduction_and_owned_cleanup() {
     assert!(state["environment_cleaned_at"].is_string());
     assert!(state["tmux_cleaned_at"].is_string());
     assert_eq!(state["environment_retained"], false);
-    for stage in aaqe::workflow::STAGES {
+    assert_eq!(state["stages"].as_array().unwrap().len(), 6);
+    let first = read_json(&dir.join("stages/test-developer/execution.json")).unwrap();
+    let second =
+        read_json(&dir.join("stages/test-developer/attempts/0002/execution.json")).unwrap();
+    assert_ne!(
+        first["tests"][0]["directory"],
+        second["tests"][0]["directory"]
+    );
+    for stage in aaqe::workflow::STAGES
+        .into_iter()
+        .chain(["coordinator", "test-developer/attempts/0002"])
+    {
         let session = read_json(&dir.join("stages").join(stage).join("tmux.json")).unwrap();
         assert!(
             !Command::new("tmux")
