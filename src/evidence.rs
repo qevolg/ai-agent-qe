@@ -36,7 +36,7 @@ fn read_xml(path: &Path) -> anyhow::Result<String> {
     };
     if let Some((content, little_endian)) = utf16 {
         anyhow::ensure!(content.len() % 2 == 0, "Invalid UTF-16 XML length");
-        let characters = content.chunks_exact(2).map(|pair| {
+        let characters = content.as_chunks::<2>().0.iter().map(|pair| {
             if little_endian {
                 u16::from_le_bytes([pair[0], pair[1]])
             } else {

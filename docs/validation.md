@@ -1,5 +1,24 @@
 # Validation
 
+## Rust 1.100 CI repair — 2026-11-25
+
+GitHub Actions run [45588021885](https://github.com/qevolg/ai-agent-qe/actions/runs/45588021885)
+failed in stable Clippy on Rust 1.100.0. The new
+`chunks_exact_to_as_chunks` lint rejected UTF-16 decoding under `-D warnings`.
+The decoder now uses `as_chunks::<2>()`, available in the minimum supported
+Rust 1.88, with the existing even-length check and decoding behavior preserved.
+
+Running the full suite with Rust 1.100 also exposed a worker lookup assumption:
+Cargo now places integration test executables under
+`{profile}/build/{package}/{hash}/out`, rather than `{profile}/deps`. Worker
+lookup now recognizes both layouts and launches the ordinary `{profile}/aaqe`
+binary. The affected transport test failed before the fix and passed after it.
+
+After both corrections, formatting, strict Clippy and the complete ordinary
+test suite passed locally on Rust 1.88.0 and 1.100.0. Each suite had 49 passing
+tests and one opt-in Docker test ignored. The original failed Actions run's
+Docker job passed; its minimum-version job was cancelled by matrix fail-fast.
+
 ## Rust rewrite — 2026-11-25
 
 The native Rust implementation was checked on Linux with Rust/Cargo 1.96.0,

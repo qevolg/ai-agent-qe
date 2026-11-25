@@ -56,13 +56,22 @@ fn tmux(arguments: &[&str], timeout: u64) -> ProcessResult {
 
 fn executable() -> Result<PathBuf> {
     let executable = std::env::current_exe()?;
-    // Integration tests run from target/{profile}/deps, whereas the worker is
-    // the ordinary installed executable built alongside the test harness.
-    if executable
-        .parent()
-        .is_some_and(|p| p.file_name().is_some_and(|n| n == "deps"))
-    {
-        let binary = executable.parent().unwrap().parent().unwrap().join("aaqe");
+    // Cargo places integration tests in {profile}/deps or, since 1.100,
+    // {profile}/build/{package}/{hash}/out. The worker is {profile}/aaqe.
+    let directory = executable.parent().context("Executable has no directory")?;
+    let profile = if directory.file_name().is_some_and(|name| name == "deps") {
+        directory.parent()
+    } else if directory.file_name().is_some_and(|name| name == "out") {
+        directory
+            .ancestors()
+            .nth(3)
+            .filter(|path| path.file_name().is_some_and(|name| name == "build"))
+            .and_then(Path::parent)
+    } else {
+        None
+    };
+    if let Some(profile) = profile {
+        let binary = profile.join("aaqe");
         if binary.is_file() {
             return Ok(binary);
         }
