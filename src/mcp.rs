@@ -37,6 +37,24 @@ pub fn tools() -> Value {
             &["stage", "instruction"]
         ),
         tool(
+            "inspect_environment",
+            "Inspect bounded read-only environment capabilities and retain evidence.",
+            json!({"probe":crate::environment_probe::schema()}),
+            &["probe"]
+        ),
+        tool(
+            "prepare_environment",
+            "Prepare or retry this audit's immutable runner before generating tests.",
+            json!({"environment":{"type":["object","null"]}}),
+            &[]
+        ),
+        tool(
+            "execute_tests",
+            "Execute accepted tests again without another Developer call; optionally select unique test IDs.",
+            json!({"test_ids":{"type":["array","null"],"items":{"type":"string","minLength":1},"minItems":1,"uniqueItems":true}}),
+            &[]
+        ),
+        tool(
             "finish",
             "Finish explicitly with a reason. Completed requires current analysis and independent validation for candidates. Blocked preserves partial evidence.",
             json!({"status":{"type":"string","enum":["completed","blocked"]},"reason":{"type":"string","minLength":1}}),
@@ -64,6 +82,20 @@ fn call(harness: &mut AuditHarness<'_>, params: &Value) -> Result<Value> {
         "run_stage" => harness.run_stage(
             arguments["stage"].as_str().unwrap(),
             arguments["instruction"].as_str().unwrap(),
+        ),
+        "inspect_environment" => harness.inspect_environment(&arguments["probe"]),
+        "prepare_environment" => harness.prepare_environment(
+            arguments
+                .get("environment")
+                .filter(|v| !v.is_null())
+                .cloned(),
+        ),
+        "execute_tests" => harness.execute_tests(
+            arguments
+                .get("test_ids")
+                .filter(|v| !v.is_null())
+                .map(|v| serde_json::from_value(v.clone()))
+                .transpose()?,
         ),
         "finish" => {
             harness.finish(
@@ -178,7 +210,7 @@ pub fn serve(directory: &Path) -> Result<()> {
                         (value, failed)
                     }
                     Err(error) => (
-                        json!({"status":"failed","error":format!("{error:#}")}),
+                        json!({"status":"failed","gate":"tool_dispatch","error":format!("{error:#}"),"recovery":harness.recovery()}),
                         true,
                     ),
                 };

@@ -252,9 +252,18 @@ pub fn inspect(workspace: &Path, directory: &Path, probe: &Value, timeout: u64) 
             ("AAQE_SSH_PASSWORD".into(), password.clone()),
         ]);
     }
+    let started_at = std::time::Instant::now();
     let mut results = Vec::new();
+    let mut budget_exhausted = false;
     for (index, argv) in commands.iter().enumerate() {
-        let mut result = run_env_bounded(argv, Some(workspace), timeout, None, &env, CAPTURE_LIMIT);
+        let elapsed = started_at.elapsed().as_secs();
+        if elapsed >= timeout {
+            budget_exhausted = true;
+            break;
+        }
+        let remaining = timeout - elapsed;
+        let mut result =
+            run_env_bounded(argv, Some(workspace), remaining, None, &env, CAPTURE_LIMIT);
         if let Some(password) = &password {
             for text in &mut result.argv {
                 *text = text.replace(password, "[REDACTED]");
@@ -295,7 +304,7 @@ pub fn inspect(workspace: &Path, directory: &Path, probe: &Value, timeout: u64) 
     if askpass.exists() {
         fs::remove_file(askpass)?;
     }
-    let mut evidence = json!({"probe":probe,"directory":directory,"capture_limit_bytes":CAPTURE_LIMIT,"success":results.iter().all(|result|result.returncode == 0),"results":results});
+    let mut evidence = json!({"probe":probe,"directory":directory,"capture_limit_bytes":CAPTURE_LIMIT,"budget_exhausted":budget_exhausted,"success":!budget_exhausted && results.iter().all(|result|result.returncode == 0),"results":results});
     // A caller can accidentally reuse a password as another field. Redact the entire
     // evidence document as well as process streams before it reaches disk.
     if let Some(password) = password {

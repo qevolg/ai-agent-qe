@@ -9,7 +9,7 @@ repository = "https://github.com/qevolg/ai-agent-qe"
 default-run = "aaqe"
 include = [
   "/Cargo.toml", "/Cargo.lock", "/README.md", "/docs/*.md",
-  "/src/*.rs", "/src/resources/**/*.md", "/src/resources/**/*.json",
+  "/src/*.rs", "/src/harness/*.rs", "/src/resources/**/*.md", "/src/resources/**/*.json",
   "/tests/*.rs", "/tests/fixtures/*.json", "/tests/fixtures/scripted_codex.py",
   "/examples/minimal/*.md", "/examples/minimal/*.yaml", "/examples/minimal/*.py",
   "/examples/minimal/tests/*.py",

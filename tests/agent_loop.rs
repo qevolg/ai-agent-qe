@@ -275,7 +275,7 @@ impl TestRuntime for Runtime {
             )?;
         }
         Ok(
-            json!({"test_id":id,"directory":directory,"result":{"argv":command,"returncode":if baseline {0} else {1},"timed_out":false}}),
+            json!({"test_id":id,"directory":directory,"result":{"argv":command,"returncode":if baseline && command[0]!="bad-baseline" {0} else {1},"timed_out":false}}),
         )
     }
 }
@@ -436,4 +436,479 @@ fn revised_explorer_cannot_accept_lines_outside_the_base() {
 #[test]
 fn interrupted_recovery_reconciles_aliases_without_reversing_restored_patch() {
     assert_transition_recovery("loss-recovered");
+}
+
+struct PreparationAgent {
+    mode: &'static str,
+}
+impl AuditAgent for PreparationAgent {
+    fn invoke(
+        &self,
+        stage: &str,
+        workspace: &Path,
+        directory: &Path,
+        inputs: &Value,
+        progress: &dyn Fn(&str),
+    ) -> Result<Value> {
+        if stage == "test-validator" && self.mode == "blocked" {
+            return Ok(
+                json!({"summary":"blocked","verdicts":[{"candidate_id":"bug","test_ids":["test"],"status":"confirmed","rationale":"no execution","evidence":[]}]}),
+            );
+        }
+        if stage == "test-developer" && self.mode == "prepare" {
+            assert_eq!(inputs["environment_ready"], true);
+            assert_eq!(inputs["environment"]["readiness"], json!([["ready"]]));
+            assert!(!inputs["environment_actions"].as_array().unwrap().is_empty());
+        }
+        let mut out =
+            Agent { mode: "normal" }.invoke(stage, workspace, directory, inputs, progress)?;
+        if stage == "test-designer" {
+            out["plans"][0]["execution_blocked_reason"] =
+                json!("Host Maven unavailable; runner can provide it");
+            if self.mode == "blocked" {
+                out["plans"][0]["blocked_reason"] = json!("No reliable oracle");
+            }
+        }
+        Ok(out)
+    }
+    fn coordinate(&self, h: &mut AuditHarness<'_>) -> Result<()> {
+        h.run_stage("code-explorer", "inspect")?;
+        if self.mode == "prepare" {
+            assert_eq!(
+                h.prepare_environment(Some(json!({"readiness":[["ready"]]})))?["status"],
+                "completed"
+            );
+            assert_eq!(h.status()["state"]["environment_ready"], true);
+            assert_eq!(h.prepare_environment(None)?["status"], "completed");
+            assert_eq!(
+                h.prepare_environment(Some(json!({"runner_service":"other"})))?["status"],
+                "failed"
+            );
+            assert_eq!(
+                h.inspect_environment(&json!({"kind":"tools","tools":["git"]}))?["status"],
+                "completed"
+            );
+        }
+        h.run_stage("bug-hunter", "hunt")?;
+        let result = h.run_stage("test-designer", "design")?;
+        assert_eq!(result["status"], "completed", "{result}");
+        if self.mode == "blocked" {
+            assert!(
+                h.status()["allowed_stages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|s| s == "test-validator")
+            );
+            assert!(
+                h.run_stage("test-developer", "override blocked plan")
+                    .is_err()
+            );
+            assert_eq!(
+                h.status()["state"]["dispatch_rejections"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(
+                h.run_stage("test-validator", "independently review blocked candidates")?["status"],
+                "completed"
+            );
+            assert_eq!(h.status()["verdicts"][0]["status"], "blocked");
+            return h.finish("completed", "reviewed blocked plan");
+        }
+        if self.mode == "prepare" {
+            assert_eq!(
+                h.run_stage("test-developer", "implement")?["status"],
+                "completed"
+            );
+            h.run_stage("test-validator", "validate first round")?;
+            assert_eq!(h.status()["verdicts"][0]["status"], "confirmed");
+            let old = h.status()["execution"]["tests"][0]["directory"].clone();
+            assert_eq!(
+                h.execute_tests(Some(vec!["test".into()]))?["status"],
+                "completed"
+            );
+            assert_ne!(old, h.status()["execution"]["tests"][0]["directory"]);
+            assert_eq!(
+                h.status()["state"]["execution_attempts"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                2
+            );
+            assert_eq!(h.status()["verdicts"], json!([]));
+            assert!(h.status()["artifacts"].get("test-validator").is_none());
+            assert_eq!(
+                h.execute_tests(Some(vec!["unknown".into()]))?["status"],
+                "failed"
+            );
+        }
+        h.finish("blocked", "execution prerequisite does not block design")
+    }
+}
+#[test]
+fn execution_blocker_is_optional_and_does_not_block_design() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = repository(temp.path());
+    let config = Config {
+        state_dir: temp.path().join("runs"),
+        ..Config::default()
+    };
+    let state = run_audit_with(
+        "audit",
+        &root,
+        &config,
+        &PreparationAgent { mode: "execution" },
+        &|_, d, _, _, _| {
+            Box::new(Runtime {
+                root: d.join("executions"),
+            })
+        },
+        &|_| {},
+    )
+    .unwrap();
+    assert_eq!(state["stages"][2]["status"], "completed");
+}
+#[test]
+fn blocked_plans_offer_validator_and_record_dispatch_rejection() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = repository(temp.path());
+    let config = Config {
+        state_dir: temp.path().join("runs"),
+        ..Config::default()
+    };
+    run_audit_with(
+        "audit",
+        &root,
+        &config,
+        &PreparationAgent { mode: "blocked" },
+        &|_, d, _, _, _| {
+            Box::new(Runtime {
+                root: d.join("executions"),
+            })
+        },
+        &|_| {},
+    )
+    .unwrap();
+}
+#[test]
+fn verdict_requires_every_test_and_only_its_applicable_baseline() {
+    let artifact = json!({"verdicts":[{"candidate_id":"bug","test_ids":["a","b"],"status":"confirmed","rationale":"both","evidence":["/a/execution.json"]}]});
+    let mut execution = json!({"baseline":[{"for_test_id":"a","result":{"returncode":0}}],"tests":[{"test_id":"a","directory":"/a","junit":{"complete":true,"cases":[{"status":"failed"}]}}]});
+    assert_eq!(
+        aaqe::workflow::grounded_verdicts(&artifact, &execution)[0]["status"],
+        "blocked"
+    );
+    execution["baseline"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"for_test_id":"b","result":{"returncode":1}}));
+    let single = json!({"verdicts":[{"candidate_id":"bug","test_ids":["a"],"status":"confirmed","rationale":"a","evidence":["/a/execution.json"]}]});
+    assert_eq!(
+        aaqe::workflow::grounded_verdicts(&single, &execution)[0]["status"],
+        "confirmed"
+    );
+}
+
+#[test]
+fn prepared_environment_is_reused_and_selected_tests_rerun_without_developer() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = repository(temp.path());
+    let config = Config {
+        state_dir: temp.path().join("runs"),
+        ..Config::default()
+    };
+    let state = run_audit_with(
+        "audit",
+        &root,
+        &config,
+        &PreparationAgent { mode: "prepare" },
+        &|_, d, _, _, _| {
+            Box::new(Runtime {
+                root: d.join("executions"),
+            })
+        },
+        &|_| {},
+    )
+    .unwrap();
+    assert_eq!(state["stages"].as_array().unwrap().len(), 5);
+}
+
+struct IndependentAgent;
+impl AuditAgent for IndependentAgent {
+    fn invoke(
+        &self,
+        stage: &str,
+        w: &Path,
+        d: &Path,
+        i: &Value,
+        p: &dyn Fn(&str),
+    ) -> Result<Value> {
+        let mut out = Agent { mode: "normal" }.invoke(stage, w, d, i, p)?;
+        if stage == "test-designer" {
+            let mut second = out["plans"][0].clone();
+            second["test_id"] = json!("independent");
+            out["plans"].as_array_mut().unwrap().push(second);
+        }
+        if stage == "test-developer" {
+            out["tests"][0]["baseline"] = json!([["bad-baseline"]]);
+            let mut second = out["tests"][0].clone();
+            second["id"] = json!("independent");
+            second["baseline"] = json!([["good-baseline"]]);
+            out["tests"].as_array_mut().unwrap().push(second);
+        }
+        Ok(out)
+    }
+    fn coordinate(&self, h: &mut AuditHarness<'_>) -> Result<()> {
+        for stage in ["code-explorer", "bug-hunter", "test-designer"] {
+            assert_eq!(h.run_stage(stage, "inspect")?["status"], "completed");
+        }
+        let result = h.run_stage("test-developer", "implement independent experiments")?;
+        assert_eq!(result["status"], "failed");
+        assert!(
+            result["recovery"]["permitted_next_actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a == "execute_tests")
+        );
+        let status = h.status();
+        assert!(status["artifacts"].get("test-developer").is_some());
+        assert_eq!(status["execution"]["tests"].as_array().unwrap().len(), 1);
+        assert_eq!(status["execution"]["tests"][0]["test_id"], "independent");
+        assert_eq!(status["execution"]["baseline"][0]["for_test_id"], "test");
+        assert_eq!(
+            status["execution"]["baseline"][1]["for_test_id"],
+            "independent"
+        );
+        assert_ne!(
+            status["execution"]["baseline"][0]["test_id"],
+            status["execution"]["baseline"][1]["test_id"]
+        );
+        assert!(
+            Path::new(status["workspace"]["path"].as_str().unwrap())
+                .join("tests/test_generated.py")
+                .is_file()
+        );
+        assert_eq!(
+            h.execute_tests(Some(vec!["independent".into()]))?["status"],
+            "completed"
+        );
+        h.finish(
+            "blocked",
+            "independent experiment completed; other baseline unavailable",
+        )
+    }
+}
+#[test]
+fn failed_scoped_baseline_preserves_patch_and_executes_next_independent_test() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = repository(temp.path());
+    let config = Config {
+        state_dir: temp.path().join("runs"),
+        ..Config::default()
+    };
+    run_audit_with(
+        "audit",
+        &root,
+        &config,
+        &IndependentAgent,
+        &|_, d, _, _, _| {
+            Box::new(Runtime {
+                root: d.join("executions"),
+            })
+        },
+        &|_| {},
+    )
+    .unwrap();
+}
+
+#[test]
+fn environment_operations_bound_runtime_timeouts_to_remaining_audit_budget() {
+    struct BudgetRuntime(Runtime);
+    impl TestRuntime for BudgetRuntime {
+        fn start(&self) -> Result<()> {
+            self.0.start()
+        }
+        fn logs(&self) -> Result<()> {
+            self.0.logs()
+        }
+        fn execute_test(&self, c: &[String], id: &str, timeout: u64) -> Result<Value> {
+            assert!(
+                timeout <= 10,
+                "execution timeout exceeds audit budget: {timeout}"
+            );
+            self.0.execute_test(c, id, timeout)
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = repository(temp.path());
+    let config = Config {
+        state_dir: temp.path().join("runs"),
+        run_timeout: 10,
+        ..Config::default()
+    };
+    run_audit_with(
+        "audit",
+        &root,
+        &config,
+        &PreparationAgent { mode: "prepare" },
+        &|_, d, _, _, timeout| {
+            assert!(
+                timeout <= 10,
+                "runtime timeout exceeds audit budget: {timeout}"
+            );
+            Box::new(BudgetRuntime(Runtime {
+                root: d.join("executions"),
+            }))
+        },
+        &|_| {},
+    )
+    .unwrap();
+}
+
+#[test]
+fn readiness_failure_locks_owned_spec_and_retries_same_runner() {
+    use std::{cell::Cell, rc::Rc};
+    struct RetryAgent;
+    impl AuditAgent for RetryAgent {
+        fn invoke(
+            &self,
+            _: &str,
+            _: &Path,
+            _: &Path,
+            _: &Value,
+            _: &dyn Fn(&str),
+        ) -> Result<Value> {
+            bail!("no worker expected")
+        }
+        fn coordinate(&self, h: &mut AuditHarness<'_>) -> Result<()> {
+            let spec = json!({"runner_service":"runner","compose":{"services":{"runner":{"image":"fixture"}}},"readiness":[["ready"]]});
+            assert_eq!(h.prepare_environment(None)?["status"], "failed");
+            assert_eq!(
+                h.prepare_environment(Some(spec.clone()))?["status"],
+                "failed"
+            );
+            assert_ne!(h.status()["state"]["environment_ready"], true);
+            assert_eq!(
+                h.prepare_environment(Some(json!({"runner_service":"changed"})))?["status"],
+                "failed"
+            );
+            assert_eq!(h.prepare_environment(Some(spec))?["status"], "completed");
+            assert_eq!(h.prepare_environment(None)?["status"], "completed");
+            assert_eq!(
+                h.status()["state"]["environment_actions"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                5
+            );
+            h.finish("blocked", "retry behavior verified")
+        }
+    }
+    struct RetryRuntime {
+        starts: Rc<Cell<u32>>,
+        directory: PathBuf,
+    }
+    impl TestRuntime for RetryRuntime {
+        fn start(&self) -> Result<()> {
+            fs::create_dir_all(self.directory.join("environment"))?;
+            fs::write(self.directory.join("environment/ownership.json"), "{}")?;
+            let count = self.starts.get() + 1;
+            self.starts.set(count);
+            if count == 1 {
+                bail!("runner readiness failed");
+            }
+            Ok(())
+        }
+        fn logs(&self) -> Result<()> {
+            Ok(())
+        }
+        fn execute_test(&self, _: &[String], _: &str, _: u64) -> Result<Value> {
+            bail!("no test expected")
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = repository(temp.path());
+    let starts = Rc::new(Cell::new(0));
+    let config = Config {
+        state_dir: temp.path().join("runs"),
+        ..Config::default()
+    };
+    run_audit_with(
+        "audit",
+        &root,
+        &config,
+        &RetryAgent,
+        &|_, d, _, _, _| {
+            Box::new(RetryRuntime {
+                starts: starts.clone(),
+                directory: d.into(),
+            })
+        },
+        &|_| {},
+    )
+    .unwrap();
+    assert_eq!(
+        starts.get(),
+        2,
+        "changed specs and already-ready retries must not restart runtime"
+    );
+}
+
+#[test]
+fn trusted_global_baseline_overrides_test_specific_prerequisites() {
+    struct TrustedAgent;
+    impl AuditAgent for TrustedAgent {
+        fn invoke(
+            &self,
+            s: &str,
+            w: &Path,
+            d: &Path,
+            i: &Value,
+            p: &dyn Fn(&str),
+        ) -> Result<Value> {
+            IndependentAgent.invoke(s, w, d, i, p)
+        }
+        fn coordinate(&self, h: &mut AuditHarness<'_>) -> Result<()> {
+            for stage in [
+                "code-explorer",
+                "bug-hunter",
+                "test-designer",
+                "test-developer",
+            ] {
+                assert_eq!(
+                    h.run_stage(stage, "trusted baseline")?["status"],
+                    "completed"
+                );
+            }
+            let status = h.status();
+            assert_eq!(status["execution"]["tests"].as_array().unwrap().len(), 2);
+            assert_eq!(status["execution"]["baseline"].as_array().unwrap().len(), 1);
+            assert!(status["execution"]["baseline"][0]["for_test_id"].is_null());
+            h.finish("blocked", "trusted baseline precedence verified")
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = repository(temp.path());
+    let config = Config {
+        state_dir: temp.path().join("runs"),
+        baseline: vec![vec!["baseline".into()]],
+        ..Config::default()
+    };
+    run_audit_with(
+        "audit",
+        &root,
+        &config,
+        &TrustedAgent,
+        &|_, d, _, _, _| {
+            Box::new(Runtime {
+                root: d.join("executions"),
+            })
+        },
+        &|_| {},
+    )
+    .unwrap();
 }

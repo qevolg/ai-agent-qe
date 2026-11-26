@@ -40,7 +40,7 @@ def coordinate(arguments, directory):
     def tool(name, **arguments):
         return request("tools/call", {"name":name, "arguments":arguments})
     request("initialize", {"protocolVersion":"2024-11-05", "capabilities":{}, "clientInfo":{"name":"scripted-codex", "version":"1"}})
-    assert len(request("tools/list", {})["tools"]) == 3
+    assert {tool["name"] for tool in request("tools/list", {})["tools"]} == {"status", "run_stage", "inspect_environment", "prepare_environment", "execute_tests", "finish"}
     assert tool("run_stage", stage="test-developer", instruction="too early")["isError"]
     assert tool("finish", status="completed", reason="too early")["isError"]
     stages = ["code-explorer", "bug-hunter", "test-designer", "test-developer", "test-validator"]

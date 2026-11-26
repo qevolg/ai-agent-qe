@@ -16,6 +16,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod environment;
+
 pub struct AuditHarness<'a> {
     pub directory: PathBuf,
     pub config: Config,
@@ -66,7 +68,21 @@ impl<'a> AuditHarness<'a> {
     }
 
     pub fn status(&self) -> Value {
-        json!({"state":self.state,"workspace":self.state["workspace"],"artifacts":self.artifacts,"execution":self.execution,"verdicts":self.verdicts,"allowed_stages":STAGES,"budgets":{"stage_calls":self.config.max_stage_calls,"attempts_per_stage":self.config.max_stage_attempts,"timeout":self.config.run_timeout}})
+        let availability: Vec<Value> = STAGES
+            .iter()
+            .map(|stage| match self.stage_gate(stage, "status") {
+                Ok(_) => json!({"stage":stage,"available":true}),
+                Err(error) => {
+                    json!({"stage":stage,"available":false,"reason":format!("{error:#}")})
+                }
+            })
+            .collect();
+        let allowed: Vec<_> = availability
+            .iter()
+            .filter(|v| v["available"] == true)
+            .map(|v| v["stage"].clone())
+            .collect();
+        json!({"state":self.state,"workspace":self.state["workspace"],"artifacts":self.artifacts,"execution":self.execution,"verdicts":self.verdicts,"allowed_stages":allowed,"stages":STAGES,"stage_availability":availability,"recovery":self.recovery(),"budgets":{"stage_calls":self.config.max_stage_calls,"attempts_per_stage":self.config.max_stage_attempts,"timeout":self.config.run_timeout}})
     }
 
     fn root(&self) -> Result<PathBuf> {
@@ -130,15 +146,16 @@ impl<'a> AuditHarness<'a> {
         Ok(())
     }
 
-    pub fn run_stage(&mut self, stage: &str, instruction: &str) -> Result<Value> {
+    fn stage_gate(&self, stage: &str, instruction: &str) -> Result<(usize, u64)> {
         ensure!(
             self.state["status"] == "running",
             "Audit is already finished"
         );
         ensure!(!interrupted(), "Interrupted by user");
         ensure!(
-            !self.directory.join("patch-transition.json").exists(),
-            "An unfinished patch transition requires recovery before another stage"
+            !self.directory.join("patch-transition.json").exists()
+                && self.state["baseline_restore_patch"].is_null(),
+            "An unfinished patch transition or baseline requires recovery before another stage"
         );
         ensure!(
             !instruction.trim().is_empty(),
@@ -148,7 +165,7 @@ impl<'a> AuditHarness<'a> {
             .iter()
             .position(|role| *role == stage)
             .context("Unknown stage")?;
-        for prerequisite in &STAGES[..index] {
+        for prerequisite in &STAGES[..if stage == "test-validator" { 3 } else { index }] {
             ensure!(
                 self.artifacts.get(*prerequisite).is_some(),
                 "Missing prerequisite: {prerequisite}"
@@ -196,6 +213,25 @@ impl<'a> AuditHarness<'a> {
             elapsed < self.config.run_timeout as i64,
             "Audit time budget exhausted"
         );
+        Ok((index, attempt))
+    }
+
+    pub fn run_stage(&mut self, stage: &str, instruction: &str) -> Result<Value> {
+        let (index, attempt) = match self.stage_gate(stage, instruction) {
+            Ok(value) => value,
+            Err(error) => {
+                let record = json!({"at":now(),"stage":stage,"instruction":instruction,"gate":"dispatch","error":format!("{error:#}"),"recovery":self.recovery()});
+                if !self.state["dispatch_rejections"].is_array() {
+                    self.state["dispatch_rejections"] = json!([]);
+                }
+                self.state["dispatch_rejections"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(record);
+                self.save()?;
+                return Err(error);
+            }
+        };
         let mut directory = self.directory.join("stages").join(stage);
         if attempt > 1 {
             directory = directory.join("attempts").join(format!("{attempt:04}"));
@@ -206,7 +242,7 @@ impl<'a> AuditHarness<'a> {
         self.state["stages"].as_array_mut().unwrap().push(json!({"number":index+1,"name":stage,"attempt":attempt,"directory":directory,"instruction":instruction,"status":"running","started_at":now()}));
         self.save()?;
         (self.progress)(&format!("Dispatch {stage}, attempt {attempt}"));
-        let inputs = json!({"stage":stage,"attempt":attempt,"instruction":instruction,"prompt":self.state["prompt"],"base_commit":self.state["workspace"]["commit"],"project_config":self.config,"artifacts":self.artifacts,"execution":self.execution,"previous_attempts":self.state["stages"],"artifact_directory":self.directory});
+        let inputs = json!({"stage":stage,"attempt":attempt,"instruction":instruction,"prompt":self.state["prompt"],"base_commit":self.state["workspace"]["commit"],"project_config":self.config,"artifacts":self.artifacts,"execution":self.execution,"previous_attempts":self.state["stages"],"environment":self.state["environment"],"environment_ready":self.state["environment_ready"],"environment_actions":self.state["environment_actions"],"artifact_directory":self.directory});
         // The harness also saves boundary inputs/results for non-Codex test agents.
         write_json(&directory.join("input.json"), &inputs)?;
         let mut outcome = self.accept(stage, index, &directory, &inputs);
@@ -224,7 +260,7 @@ impl<'a> AuditHarness<'a> {
                 json!({"status":"completed","stage":stage,"attempt":attempt,"directory":directory,"artifact":output,"execution":self.execution,"verdicts":self.verdicts})
             }
             Err(error) => {
-                json!({"status":"failed","stage":stage,"attempt":attempt,"directory":directory,"error":format!("{error:#}"),"execution":self.execution})
+                json!({"status":"failed","stage":stage,"attempt":attempt,"directory":directory,"error":format!("{error:#}"),"gate":"stage_execution","recovery":self.recovery(),"execution":self.execution})
             }
         };
         self.state["stages"][entry]["status"] = result["status"].clone();
@@ -359,87 +395,6 @@ impl<'a> AuditHarness<'a> {
             self.execute(&output, directory)?;
         }
         Ok(output)
-    }
-
-    fn execute(&mut self, output: &Value, attempt: &Path) -> Result<()> {
-        let root = self.root()?;
-        let mut environment = self.artifacts["code-explorer"]["environment"].clone();
-        if let Some(overrides) = self.config.environment.as_object() {
-            environment
-                .as_object_mut()
-                .unwrap()
-                .extend(overrides.clone());
-        }
-        // One owned Compose snapshot per run; a revision cannot orphan the old stack.
-        ensure!(
-            self.state["environment"].is_null() || self.state["environment"] == environment,
-            "Environment changed after startup; retain this run and start a new audit for the new environment"
-        );
-        self.state["environment"] = environment.clone();
-        let runtime = (self.factory)(
-            &root,
-            &self.directory,
-            self.state["id"].as_str().unwrap(),
-            environment,
-            self.config.docker_timeout,
-        );
-        let started = self.state["environment_started"] == true;
-        self.state["environment_retained"] = json!(true);
-        self.save()?;
-        let outcome = (|| -> Result<()> {
-            if !started {
-                runtime.start()?;
-                self.state["environment_started"] = json!(true);
-                self.save()?;
-            }
-            let baseline: Vec<Vec<String>> = if self.config.baseline.is_empty() {
-                serde_json::from_value(self.artifacts["code-explorer"]["baseline"].clone())?
-            } else {
-                self.config.baseline.clone()
-            };
-            let patch = output["patch"].as_str().unwrap();
-            if !baseline.is_empty() {
-                self.state["baseline_restore_patch"] = json!(patch);
-                self.save()?;
-                self.reverse(patch)?;
-                let baseline_outcome = (|| -> Result<()> {
-                    for (index, command) in baseline.iter().enumerate() {
-                        let record = runtime.execute_test(
-                            command,
-                            &format!("baseline-{}", index + 1),
-                            self.config.test_timeout,
-                        )?;
-                        let code = record["result"]["returncode"].as_i64().unwrap_or(127);
-                        self.execution["baseline"]
-                            .as_array_mut()
-                            .unwrap()
-                            .push(record);
-                        self.save_execution(attempt)?;
-                        ensure!(
-                            code == 0,
-                            "Baseline command failed; target verification is blocked"
-                        );
-                    }
-                    Ok(())
-                })();
-                let restore = ignoring_interrupts(|| self.gate()?.apply(patch));
-                restore?;
-                self.state["baseline_restore_patch"] = Value::Null;
-                self.save()?;
-                baseline_outcome?;
-            }
-            for test in output["tests"].as_array().unwrap() {
-                let record = collect_test(runtime.as_ref(), test, self.config.test_timeout)?;
-                self.execution["tests"].as_array_mut().unwrap().push(record);
-                self.save_execution(attempt)?;
-                self.gate()?.verify_worktree()?;
-            }
-            Ok(())
-        })();
-        if let Err(error) = ignoring_interrupts(|| runtime.logs()) {
-            self.state["log_collection_error"] = json!(format!("{error:#}"));
-        }
-        outcome
     }
 
     fn save_execution(&self, attempt: &Path) -> Result<()> {
@@ -580,6 +535,9 @@ impl<'a> AuditHarness<'a> {
                 .is_empty()
             {
                 for stage in &STAGES[2..] {
+                    if *stage == "test-developer" && !self.implementable() {
+                        continue;
+                    }
                     ensure!(
                         self.artifacts.get(*stage).is_some(),
                         "Missing independent completion prerequisite: {stage}"

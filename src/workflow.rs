@@ -108,16 +108,28 @@ pub fn grounded_verdicts(artifact: &Value, execution: &Value) -> Value {
     let empty = Vec::new();
     let records = execution["tests"].as_array().unwrap_or(&empty);
     let baseline = execution["baseline"].as_array().unwrap_or(&empty);
-    let healthy = !baseline.is_empty() && baseline.iter().all(|r| r["result"]["returncode"] == 0);
+
     let mut verdicts = Vec::new();
     for original in artifact["verdicts"].as_array().unwrap_or(&empty) {
         let mut verdict = original.clone();
-        let supporting: Vec<&Value> = strings(&verdict["test_ids"])
+        let ids = strings(&verdict["test_ids"]);
+        let supporting: Vec<&Value> = ids
             .iter()
             .filter_map(|id| records.iter().find(|r| r["test_id"].as_str() == Some(id)))
             .collect();
-        let complete =
-            !supporting.is_empty() && supporting.iter().all(|r| r["junit"]["complete"] == true);
+        let complete = !ids.is_empty()
+            && supporting.len() == ids.len()
+            && supporting.iter().all(|r| r["junit"]["complete"] == true);
+        let healthy = ids.iter().all(|id| {
+            let applicable: Vec<_> = baseline
+                .iter()
+                .filter(|r| r["for_test_id"].is_null() || r["for_test_id"].as_str() == Some(id))
+                .collect();
+            !applicable.is_empty()
+                && applicable
+                    .iter()
+                    .all(|r| r["result"]["returncode"] == 0 && r["result"]["timed_out"] != true)
+        });
         let failed = supporting.iter().any(|r| {
             r["junit"]["cases"]
                 .as_array()

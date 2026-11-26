@@ -238,3 +238,41 @@ fn ssh_password_echoes_are_redacted_from_all_saved_evidence() {
             .any(|part| part.as_str().unwrap().contains("docker ps"))
     );
 }
+
+#[test]
+fn multiple_probe_commands_share_one_operation_deadline() {
+    if std::env::var_os("AAQE_PROBE_DEADLINE_CHILD").is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in ["git", "go", "ssh"] {
+            let file = temp.path().join(name);
+            fs::write(&file, "#!/bin/sh\n/bin/sleep 1.1\n").unwrap();
+            fs::set_permissions(file, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "multiple_probe_commands_share_one_operation_deadline",
+                "--nocapture",
+            ])
+            .env("AAQE_PROBE_DEADLINE_CHILD", "1")
+            .env("PATH", temp.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    let workspace = tempfile::tempdir().unwrap();
+    let evidence = tempfile::tempdir().unwrap();
+    let start = std::time::Instant::now();
+    let result = inspect(
+        workspace.path(),
+        evidence.path(),
+        &json!({"kind":"tools","tools":["git","go","ssh"]}),
+        2,
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_millis(3000),
+        "probe commands multiplied the initial operation timeout"
+    );
+    assert!(result.is_err() || result.unwrap()["success"] == false);
+}

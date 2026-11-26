@@ -42,6 +42,12 @@
               "string",
               "null"
             ]
+          },
+          "execution_blocked_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

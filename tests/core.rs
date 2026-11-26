@@ -1,5 +1,5 @@
 use aaqe::{config::Config, contracts, gitops, process, state::Store};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{fs, path::Path};
 
 fn git(directory: &Path, arguments: &[&str]) -> String {
@@ -326,4 +326,38 @@ fn blocked_plans_do_not_require_tests_and_verdicts_cannot_cross_candidates() {
         &artifacts,
     )
     .unwrap();
+}
+
+#[test]
+fn model_schema_projects_optional_fields_without_breaking_legacy_host_artifacts() {
+    fn strict(value: &Value) {
+        if let Some(properties) = value.get("properties").and_then(Value::as_object) {
+            let required = value["required"].as_array().unwrap();
+            assert_eq!(properties.len(), required.len());
+            assert_eq!(value["additionalProperties"], false);
+            for key in properties.keys() {
+                assert!(required.iter().any(|item| item == key));
+            }
+        }
+        match value {
+            Value::Object(map) => {
+                for value in map.values() {
+                    strict(value)
+                }
+            }
+            Value::Array(items) => {
+                for value in items {
+                    strict(value)
+                }
+            }
+            _ => {}
+        }
+    }
+    for stage in aaqe::workflow::STAGES {
+        strict(&contracts::schema(stage).unwrap());
+    }
+    assert_eq!(
+        contracts::schema("code-explorer").unwrap()["properties"]["environment"]["properties"]["compose"],
+        json!({"type":["string","null"]})
+    );
 }

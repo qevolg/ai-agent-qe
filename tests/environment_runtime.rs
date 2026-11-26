@@ -171,3 +171,23 @@ fn encoded_compose_objects_support_structured_agent_output() {
         aaqe::state::read_json(&runtime.env_dir.join("compose.generated.json")).unwrap();
     assert_eq!(generated["services"]["runner"]["image"], "alpine");
 }
+
+#[test]
+fn startup_commands_share_one_operation_deadline() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let captured = calls.clone();
+    let runtime=ComposeEnvironment::new(&workspace,&temp.path().join("run"),"deadline",json!({"compose":{"services":{"runner":{"image":"fixture"}}},"runner_service":"runner","readiness":[["ready"],["ready-again"]]}),2).with_executor(Arc::new(move|argv,timeout|{
+        captured.lock().unwrap().push(timeout);
+        if argv.iter().any(|arg|arg=="config"){std::thread::sleep(std::time::Duration::from_millis(1100));}
+        ProcessResult{argv:argv.to_vec(),returncode:0,stdout:if argv.iter().any(|arg|arg=="config"){"{\"services\":{\"runner\":{\"image\":\"fixture\"}}}".into()}else{String::new()},stderr:String::new(),elapsed:0.0,timed_out:false}
+    }));
+    runtime.start().unwrap();
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![2, 1, 1, 1],
+        "render, up and readiness share the initial time budget"
+    );
+}

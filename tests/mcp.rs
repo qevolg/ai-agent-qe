@@ -173,7 +173,7 @@ fn mcp_protocol_errors_do_not_pollute_stdout() {
         .collect();
     assert_eq!(replies.len(), 4);
     assert_eq!(replies[0]["result"]["protocolVersion"], "2024-11-05");
-    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 3);
+    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 6);
     assert_eq!(replies[2]["result"]["isError"], true);
     assert_eq!(replies[3]["error"]["code"], -32601);
 }
@@ -286,5 +286,32 @@ fn cancelling_or_timing_out_the_coordinator_stops_separate_stage_processes() {
         }
         assert!(run.join("report.md").is_file());
         cleanup_tmux(&run).unwrap();
+    }
+}
+
+#[test]
+fn environment_tools_advertise_validated_operation_inputs() {
+    let tools = aaqe::mcp::tools();
+    for (name, args) in [
+        (
+            "inspect_environment",
+            json!({"probe":{"kind":"tools","tools":["git"]}}),
+        ),
+        (
+            "prepare_environment",
+            json!({"environment":{"compose":{"services":{"runner":{"image":"local"}}},"runner_service":"runner"}}),
+        ),
+        ("execute_tests", json!({"test_ids":["one"]})),
+    ] {
+        let tool = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .expect("missing environment tool");
+        jsonschema::validator_for(&tool["inputSchema"])
+            .unwrap()
+            .validate(&args)
+            .unwrap();
     }
 }

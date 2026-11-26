@@ -123,7 +123,25 @@ impl ComposeEnvironment {
         Ok(argv)
     }
     fn checked(&self, argv: &[String], label: &str) -> Result<ProcessResult> {
-        let result = (self.execute)(argv, self.timeout);
+        self.checked_until(argv, label, None)
+    }
+    fn checked_until(
+        &self,
+        argv: &[String],
+        label: &str,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<ProcessResult> {
+        let timeout = if let Some(deadline) = deadline {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .context("Environment operation time budget exhausted")?;
+            // Process timeouts use whole seconds; round up only the remaining fraction.
+            remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0)
+        } else {
+            self.timeout
+        };
+        ensure!(timeout > 0, "Environment operation time budget exhausted");
+        let result = (self.execute)(argv, timeout.min(self.timeout));
         save_result(
             &result,
             &self
@@ -139,6 +157,7 @@ impl ComposeEnvironment {
         Ok(result)
     }
     pub fn start(&self) -> Result<()> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(self.timeout);
         ensure!(
             !absolute_path(&self.run_dir).starts_with(absolute_path(&self.workspace)),
             "Environment artifacts must be outside the worktree"
@@ -162,7 +181,7 @@ impl ComposeEnvironment {
                 );
             }
         } else {
-            self.create_snapshot(runner)?;
+            self.create_snapshot(runner, deadline)?;
         }
         let mut services = strings(&self.spec["services"]);
         if !services.iter().any(|s| s == runner) {
@@ -185,13 +204,13 @@ impl ComposeEnvironment {
                 .to_string(),
         ]);
         argv.extend(unique);
-        self.checked(&argv, "up")?;
+        self.checked_until(&argv, "up", Some(deadline))?;
         if let Some(commands) = self.spec["readiness"].as_array() {
             for (index, command) in commands.iter().enumerate() {
                 let mut argv = self.arguments(true)?;
                 argv.extend(["exec".into(), "-T".into(), runner.into()]);
                 argv.extend(strings(command));
-                self.checked(&argv, &format!("readiness-{index}"))?;
+                self.checked_until(&argv, &format!("readiness-{index}"), Some(deadline))?;
             }
         }
         Ok(())
@@ -244,9 +263,9 @@ impl ComposeEnvironment {
         }
         Ok(())
     }
-    fn create_snapshot(&self, runner: &str) -> Result<()> {
+    fn create_snapshot(&self, runner: &str, deadline: std::time::Instant) -> Result<()> {
         for name in strings(&self.spec["external_containers"]) {
-            let result = self.checked(
+            let result = self.checked_until(
                 &[
                     "docker".into(),
                     "inspect".into(),
@@ -255,6 +274,7 @@ impl ComposeEnvironment {
                     name.clone(),
                 ],
                 &format!("external-{}", &Uuid::new_v4().simple().to_string()[..8]),
+                Some(deadline),
             )?;
             let inspected: Value = serde_json::from_str(&result.stdout)
                 .context(format!("Cannot inspect external test container: {name}"))?;
@@ -283,7 +303,7 @@ impl ComposeEnvironment {
         }
         let mut argv = self.arguments(false)?;
         argv.extend(["config".into(), "--format".into(), "json".into()]);
-        let rendered = self.checked(&argv, "config")?;
+        let rendered = self.checked_until(&argv, "config", Some(deadline))?;
         let document: Value = serde_json::from_str(&rendered.stdout)
             .context("Docker Compose returned invalid configuration")?;
         let services = document["services"]

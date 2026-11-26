@@ -19,6 +19,14 @@ pub fn schema(stage: &str) -> Result<Value> {
         match value {
             Value::Object(map) => {
                 map.remove("uniqueItems");
+                if let Some(properties) = map.get_mut("properties").and_then(Value::as_object_mut) {
+                    if let Some(compose) = properties.get_mut("compose") {
+                        *compose = serde_json::json!({"type":["string","null"]});
+                    }
+                    let required = properties.keys().cloned().collect::<Vec<_>>();
+                    map.insert("required".into(), serde_json::json!(required));
+                    map.insert("additionalProperties".into(), serde_json::json!(false));
+                }
                 for value in map.values_mut() {
                     model_subset(value);
                 }
@@ -119,11 +127,21 @@ pub fn validate_links(stage: &str, artifact: &Value, artifacts: &Value) -> Resul
             if identities(verdicts, "candidate_id") != candidates {
                 bail!("Validation must cover every candidate");
             }
-            let tests: HashMap<_, _> = artifacts["test-developer"]["tests"]
+            let test_key = if artifacts.get("test-developer").is_some() {
+                "id"
+            } else {
+                "test_id"
+            };
+            let sources = if test_key == "id" {
+                &artifacts["test-developer"]["tests"]
+            } else {
+                &artifacts["test-designer"]["plans"]
+            };
+            let tests: HashMap<_, _> = sources
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter_map(|test| test["id"].as_str().map(|id| (id, test)))
+                .filter_map(|test| test[test_key].as_str().map(|id| (id, test)))
                 .collect();
             for verdict in verdicts {
                 for id in items(verdict, "test_ids")? {
