@@ -912,3 +912,100 @@ fn trusted_global_baseline_overrides_test_specific_prerequisites() {
     )
     .unwrap();
 }
+
+#[test]
+fn baseline_patch_restore_failure_stops_before_empty_baseline_target_and_recovers() {
+    struct RestoreAgent;
+    impl AuditAgent for RestoreAgent {
+        fn invoke(
+            &self,
+            stage: &str,
+            w: &Path,
+            d: &Path,
+            i: &Value,
+            p: &dyn Fn(&str),
+        ) -> Result<Value> {
+            let mut output = IndependentAgent.invoke(stage, w, d, i, p)?;
+            if stage == "test-developer" {
+                output["tests"][1]["baseline"] = json!([]);
+            }
+            Ok(output)
+        }
+        fn coordinate(&self, h: &mut AuditHarness<'_>) -> Result<()> {
+            for stage in ["code-explorer", "bug-hunter", "test-designer"] {
+                assert_eq!(h.run_stage(stage, "inspect")?["status"], "completed");
+            }
+            let result = h.run_stage("test-developer", "exercise restoration failure")?;
+            assert_eq!(result["status"], "failed");
+            let status = h.status();
+            assert_eq!(
+                status["execution"]["tests"],
+                json!([]),
+                "no target may execute while the accepted patch requires restoration"
+            );
+            assert!(status["state"]["baseline_restore_patch"].is_string());
+            assert_eq!(status["execution"]["baseline"].as_array().unwrap().len(), 1);
+            let workspace = PathBuf::from(status["workspace"]["path"].as_str().unwrap());
+            fs::remove_file(workspace.join("tests/test_generated.py"))?;
+            h.finish(
+                "blocked",
+                "remove injected obstruction and recover accepted patch",
+            )
+        }
+    }
+    struct RestoreRuntime {
+        root: PathBuf,
+        execution: Runtime,
+    }
+    impl TestRuntime for RestoreRuntime {
+        fn start(&self) -> Result<()> {
+            Ok(())
+        }
+        fn logs(&self) -> Result<()> {
+            Ok(())
+        }
+        fn execute_test(&self, command: &[String], id: &str, timeout: u64) -> Result<Value> {
+            if id.starts_with("baseline-") {
+                // The generated file was removed for baseline execution. Create a
+                // conflicting allowed test file so protected reapplication fails.
+                fs::create_dir_all(self.root.join("tests"))?;
+                fs::write(
+                    self.root.join("tests/test_generated.py"),
+                    "# restoration obstruction\n",
+                )?;
+            }
+            self.execution.execute_test(command, id, timeout)
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = repository(temp.path());
+    let config = Config {
+        state_dir: temp.path().join("runs"),
+        ..Config::default()
+    };
+    let state = run_audit_with(
+        "audit",
+        &root,
+        &config,
+        &RestoreAgent,
+        &|w, d, _, _, _| {
+            Box::new(RestoreRuntime {
+                root: w.into(),
+                execution: Runtime {
+                    root: d.join("executions"),
+                },
+            })
+        },
+        &|_| {},
+    )
+    .unwrap();
+    assert_eq!(state["status"], "blocked");
+    assert!(state["baseline_restore_patch"].is_null());
+    assert_eq!(
+        fs::read_to_string(
+            Path::new(state["workspace"]["path"].as_str().unwrap()).join("tests/test_generated.py")
+        )
+        .unwrap(),
+        "assert False\n"
+    );
+}

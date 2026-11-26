@@ -292,6 +292,12 @@ impl AuditHarness<'_> {
                         output,
                         attempt,
                     ) {
+                        // Only an ordinary failed baseline with its accepted patch
+                        // restored may be isolated to one target. An unfinished
+                        // restoration is a worktree recovery gate for the round.
+                        if !self.state["baseline_restore_patch"].is_null() {
+                            return Err(error.context("Baseline patch restoration requires recovery; execution round stopped"));
+                        }
                         failures.push(format!("{}: {error:#}", test["id"]));
                         continue;
                     }
