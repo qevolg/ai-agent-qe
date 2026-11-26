@@ -372,6 +372,101 @@ fn background_stage_streams_logs_without_tmux_and_kills_descendants_on_timeout()
 }
 
 #[test]
+fn tui_exit_during_pane_query_preserves_the_recorded_result() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Some(root) = std::env::var_os("AAQE_TUI_EXIT_RACE_DIR") {
+        let root = Path::new(&root);
+        let stage = root.join("stages/coordinator");
+        let completed = root.ends_with("completed");
+        write_json(
+            &root.join("harness.json"),
+            &json!({"state":{"status":"completed"}}),
+        )
+        .unwrap();
+        let command = if completed {
+            "while [ ! -f \"$AAQE_TUI_EXIT_RACE_DIR/pane-query\" ]; do sleep .01; done; touch \"$AAQE_TUI_EXIT_RACE_DIR/stages/coordinator/audit-finished\"; exit 0"
+        } else {
+            "while [ ! -f \"$AAQE_TUI_EXIT_RACE_DIR/pane-query\" ]; do sleep .01; done; exit 23"
+        };
+        let result = run_tui(&strings(&["sh", "-c", command]), root, &stage, 10, &|_| {});
+        if completed {
+            result.unwrap();
+        } else {
+            assert_eq!(
+                read_json(&stage.join("process.json")).unwrap()["returncode"],
+                23
+            );
+            let error = result.unwrap_err();
+            assert!(error.to_string().contains("exit 23"), "{error}");
+        }
+        return;
+    }
+
+    let dir = Sessions::new();
+    let bin = dir.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let real_tmux = Command::new("sh")
+        .args(["-c", "command -v tmux"])
+        .output()
+        .unwrap();
+    assert!(real_tmux.status.success());
+    let real_tmux = String::from_utf8(real_tmux.stdout).unwrap();
+    let wrapper = bin.join("tmux");
+    fs::write(
+        &wrapper,
+        r##"#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+command = [os.environ["AAQE_REAL_TMUX"], *sys.argv[1:]]
+if sys.argv[1] == "display-message" and sys.argv[-1] == "#{pane_dead}":
+    root = Path(os.environ["AAQE_TUI_EXIT_RACE_DIR"])
+    (root / "pane-query").touch()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        result = subprocess.run(command, capture_output=True)
+        if (root / "stages/coordinator/finished").exists() and result.stdout.strip() == b"1":
+            sys.stdout.buffer.write(result.stdout)
+            sys.stderr.buffer.write(result.stderr)
+            sys.exit(result.returncode)
+        time.sleep(.01)
+    sys.exit("TUI worker did not exit during the pane query")
+os.execv(command[0], command)
+"##,
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+    for outcome in ["failed", "completed"] {
+        let root = dir.path().join(outcome);
+        fs::create_dir(&root).unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tui_exit_during_pane_query_preserves_the_recorded_result",
+                "--nocapture",
+            ])
+            .env("PATH", &path)
+            .env("AAQE_TUI_EXIT_RACE_DIR", &root)
+            .env("AAQE_REAL_TMUX", real_tmux.trim())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn tui_timeout_kills_descendants_that_outlive_the_leader() {
     let dir = Sessions::new();
     let stage = dir.path().join("stages/coordinator");

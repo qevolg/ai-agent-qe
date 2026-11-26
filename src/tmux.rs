@@ -157,6 +157,9 @@ pub fn run_tui(
             5,
         );
         if pane.returncode != 0 || pane.stdout.trim() == "1" {
+            if directory.join("audit-finished").exists() || directory.join("finished").exists() {
+                continue;
+            }
             bail!(
                 "Codex TUI exited before finishing the audit; see {}",
                 directory.display()

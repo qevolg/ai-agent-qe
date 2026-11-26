@@ -1,5 +1,23 @@
 # Validation
 
+## TUI exit polling CI repair — 2026-11-26
+
+GitHub Actions run [45730201256](https://github.com/qevolg/ai-agent-qe/actions/runs/45730201256)
+failed the Rust 1.88.0 TUI timeout regression. Its Docker job passed, while the
+stable job was cancelled by matrix fail-fast. The worker could write its exit
+result and finish while the parent was querying tmux, causing the parent to
+report a dead pane instead of the recorded timeout exit code 124.
+
+When a pane is dead or missing, the parent now rechecks the completion markers
+before reporting an unexpected exit. Existing validation then reads either the
+acknowledged audit status or the recorded process result. A deterministic test
+uses real tmux and holds a pane query until the worker has exited, covering
+both exit code 23 and an acknowledged completed audit. Both cases failed before
+the fix and passed afterwards. Complete ordinary suites and strict Clippy passed
+locally on Rust 1.88.0 and 1.100.0: 68 tests passed per suite, with the opt-in
+Docker test ignored. Formatting, Release build and Cargo package verification
+also passed. Independent review found no actionable issues.
+
 ## Retained coordinator TUI — 2026-11-26
 
 Each new audit now retains one interactive Codex TUI session named
