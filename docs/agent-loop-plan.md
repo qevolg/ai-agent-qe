@@ -1,5 +1,9 @@
 # Codex Agent Loop Implementation Plan
 
+The session transport in this original plan is superseded by
+`coordinator-tui-plan.md`: only the interactive coordinator uses tmux, stages run
+as background processes, and the TUI stays alive after audit completion.
+
 > **For agentic workers:** Use executing-plans to implement this plan inline,
 > followed by requesting-code-review for one independent whole-branch review.
 

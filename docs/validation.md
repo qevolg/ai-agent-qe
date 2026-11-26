@@ -1,5 +1,46 @@
 # Validation
 
+## Retained coordinator TUI — 2026-11-26
+
+Each new audit now retains one interactive Codex TUI session named
+`aaqe-<12 hex characters>`. Stage attempts run as fresh background `codex exec`
+processes without tmux. A guarded MCP finish acknowledgement completes the audit
+and releases the outer CLI while the TUI stays interactive.
+
+- The ordinary suite passed: 67 tests, with the opt-in Docker test ignored.
+  Regressions check terminal stdin/stdout/stderr, post-report input after the
+  audit timeout has elapsed, independent attempts without stage tmux metadata,
+  live stage logs, and cleanup of both new and legacy session names.
+- The real Docker workflow passed with deterministic coordinator/stage model
+  fixtures, all five roles, a Developer retry, actual baseline/target execution,
+  reproduction and owned resource cleanup.
+- Strict Clippy passed on the default toolchain and Rust 1.100.0. The declared
+  minimum Rust 1.88.0 passed `cargo check --locked --all-targets`.
+- Formatting, Release build and Cargo package verification passed.
+- A bounded actual Codex 0.172.0 TUI check called the private MCP `status` and
+  `finish` tools, intentionally finished blocked with reason
+  `interactive TUI transport smoke complete`, and responded to a subsequent
+  terminal message after the outer CLI returned. Its test session was cleaned.
+  This validates interactive transport, not an actual-model product audit.
+
+The actual-model test used a separate temporary Codex home with the scratch
+repository trusted. The user's global trust settings were not changed. Native
+Codex login/folder-trust prompts remain available through the retained TUI; a
+first run in an untrusted repository may require the user's input there.
+
+Independent review exposed cancellation leaks when the coordinator's direct
+child exited before its descendants, or killed MCP before MCP could cancel its
+stage. New regressions reproduced both. TUI exit now cleans its remaining process
+group; stages have independent AAQE supervisors that watch their original MCP
+parent and cancel the stage group on parent loss. Advisory locks synchronize
+shutdown with live MCP/stage supervisors and release automatically after a hard
+kill, avoiding stale-file waits and overlapping harness finalization.
+The independent follow-up review reproduced the formerly leaking scenario with
+the fixed implementation and found no remaining actionable issues.
+
+The sections below record earlier implementations and their verification; their
+per-stage tmux descriptions are historical.
+
 ## Codex coordinator agent loop — 2026-11-25
 
 The fixed scheduler has been replaced by one persistent Codex coordinator with a

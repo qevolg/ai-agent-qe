@@ -21,8 +21,20 @@ fn repo(path: &Path) {
     git(path, &["remote", "add", "origin", "."]).unwrap();
 }
 
+struct Cleanup(std::path::PathBuf);
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        if let Ok(runs) = fs::read_dir(&self.0) {
+            for run in runs.flatten() {
+                let _ = cleanup_tmux(&run.path());
+            }
+        }
+    }
+}
+
 #[test]
-fn native_coordinator_uses_mcp_and_starts_fresh_stage_windows() {
+fn native_coordinator_retains_one_interactive_tui_and_fresh_background_stages() {
     let temp = tempfile::tempdir().unwrap();
     repo(temp.path());
     let config = Config {
@@ -35,35 +47,70 @@ fn native_coordinator_uses_mcp_and_starts_fresh_stage_windows() {
             ),
             "--loop-test".into(),
         ],
-        run_timeout: 30,
+        run_timeout: 3,
         ..Config::default()
     };
+    let _cleanup = Cleanup(config.state_dir.clone());
     let state = aaqe::workflow::run_audit("audit", temp.path(), &config, &|_| {}).unwrap();
     let directory = config.state_dir.join(state["id"].as_str().unwrap());
-    let sessions = [
-        "coordinator",
-        "code-explorer",
-        "code-explorer/attempts/0002",
-        "bug-hunter",
-    ]
-    .map(|p| {
-        let stage = directory.join("stages").join(p);
+    assert_eq!(state["status"], "completed", "{state}");
+    assert!(directory.join("report.md").is_file());
+    let coordinator = directory.join("stages/coordinator");
+    let metadata = read_json(&coordinator.join("tmux.json")).unwrap();
+    let session = metadata["session"].as_str().unwrap();
+    assert!(
+        regex::Regex::new(r"^aaqe-[0-9a-f]{12}$")
+            .unwrap()
+            .is_match(session)
+    );
+    let terminal = read_json(&coordinator.join("terminal.json")).unwrap();
+    assert_eq!(terminal, json!({"stdin":true,"stdout":true,"stderr":true}));
+    std::thread::sleep(std::time::Duration::from_millis(3200));
+    assert!(
+        !coordinator.join("finished").exists(),
+        "TUI exited with the audit"
+    );
+    assert!(
+        Command::new("tmux")
+            .args([
+                "send-keys",
+                "-t",
+                session,
+                "follow up after report",
+                "Enter"
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !coordinator.join("follow-up.txt").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "retained TUI did not accept input"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        fs::read_to_string(coordinator.join("follow-up.txt")).unwrap(),
+        "follow up after report\n"
+    );
+    for path in ["code-explorer", "code-explorer/attempts/0002", "bug-hunter"] {
+        let stage = directory.join("stages").join(path);
         assert!(stage.join("input.json").is_file());
         assert!(stage.join("prompt.md").is_file());
         assert!(stage.join("stdout.log").is_file());
-        read_json(&stage.join("tmux.json")).unwrap()["session"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-    });
+        assert!(stage.join("process.json").is_file());
+        assert!(!stage.join("tmux.json").exists());
+    }
     cleanup_tmux(&directory).unwrap();
-    assert_eq!(state["status"], "completed", "{state}");
-    assert_eq!(
-        sessions
-            .iter()
-            .collect::<std::collections::HashSet<_>>()
-            .len(),
-        4
+    assert!(
+        !Command::new("tmux")
+            .args(["has-session", "-t", &format!("={session}")])
+            .output()
+            .unwrap()
+            .status
+            .success()
     );
     assert_eq!(state["stages"].as_array().unwrap().len(), 3);
     let events = fs::read_to_string(directory.join("stages/coordinator/tools.jsonl")).unwrap();
@@ -82,6 +129,7 @@ fn mcp_protocol_errors_do_not_pollute_stdout() {
         run_timeout: 10,
         ..Config::default()
     };
+    let _cleanup = Cleanup(config.state_dir.clone());
     let state = aaqe::workflow::run_audit("audit", temp.path(), &config, &|_| {}).unwrap();
     assert_eq!(state["status"], "blocked");
     let directory = config.state_dir.join(state["id"].as_str().unwrap());
@@ -136,12 +184,19 @@ fn cancelling_or_timing_out_the_coordinator_stops_separate_stage_processes() {
         thread,
         time::{Duration, Instant},
     };
-    for timeout in [false, true] {
+    for cancellation in [
+        "interrupt",
+        "timeout",
+        "delete-session",
+        "exit-tui",
+        "kill-mcp",
+    ] {
         let temp = tempfile::tempdir().unwrap();
         repo(temp.path());
         let runs = temp.path().join("runs");
+        let _cleanup = Cleanup(runs.clone());
         let config = temp.path().join("test-config.yaml");
-        fs::write(&config,serde_json::to_string(&json!({"state_dir":runs,"codex":{"command":["python3",format!("{}/tests/fixtures/scripted_codex.py",env!("CARGO_MANIFEST_DIR")),"--cancel-test"]},"loop":{"timeout":if timeout {3} else {30}}})).unwrap()).unwrap();
+        fs::write(&config,serde_json::to_string(&json!({"state_dir":runs,"codex":{"command":["python3",format!("{}/tests/fixtures/scripted_codex.py",env!("CARGO_MANIFEST_DIR")),"--cancel-test",if cancellation == "kill-mcp" {"--kill-mcp-test"}else{"--normal-mcp-test"}]},"loop":{"timeout":if cancellation == "timeout" {3} else {30}}})).unwrap()).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_aaqe"))
             .current_dir(temp.path())
             .args(["--config", config.to_str().unwrap(), "run", "audit"])
@@ -163,9 +218,26 @@ fn cancelling_or_timing_out_the_coordinator_stops_separate_stage_processes() {
             assert!(Instant::now() < deadline, "stage did not start");
             thread::sleep(Duration::from_millis(20));
         };
-        if !timeout {
+        if cancellation == "interrupt" || cancellation == "kill-mcp" {
             unsafe {
                 libc::kill(child.id() as i32, libc::SIGINT);
+            }
+        } else if cancellation == "delete-session" {
+            let metadata = read_json(&run.join("stages/coordinator/tmux.json")).unwrap();
+            assert!(
+                Command::new("tmux")
+                    .args(["kill-session", "-t", metadata["session"].as_str().unwrap()])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        } else if cancellation == "exit-tui" {
+            let pid: i32 = fs::read_to_string(run.join("stages/coordinator/tui.pid"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
             }
         }
         let deadline = Instant::now() + Duration::from_secs(9);
@@ -183,7 +255,11 @@ fn cancelling_or_timing_out_the_coordinator_stops_separate_stage_processes() {
         let state = read_json(&run.join("run.json")).unwrap();
         assert_eq!(
             state["status"],
-            if timeout { "blocked" } else { "interrupted" },
+            if cancellation == "interrupt" || cancellation == "kill-mcp" {
+                "interrupted"
+            } else {
+                "blocked"
+            },
             "{state}"
         );
         let stage = run.join("stages/code-explorer");
@@ -196,6 +272,18 @@ fn cancelling_or_timing_out_the_coordinator_stops_separate_stage_processes() {
             );
         }
         assert!(stage.join("finished").exists());
+        assert_eq!(
+            read_json(&stage.join("process.json")).unwrap()["returncode"],
+            130
+        );
+        let child_pid = fs::read_to_string(stage.join("child.pid")).unwrap();
+        if let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", child_pid.trim())) {
+            assert_eq!(
+                stat.split_whitespace().nth(2),
+                Some("Z"),
+                "stage descendant survived cancellation"
+            );
+        }
         assert!(run.join("report.md").is_file());
         cleanup_tmux(&run).unwrap();
     }

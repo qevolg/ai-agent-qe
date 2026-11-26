@@ -4,7 +4,7 @@ use aaqe::{
     codex::Codex,
     config::Config,
     state::{read_json, write_json},
-    tmux::{cleanup_tmux, run_tmux},
+    tmux::{cleanup_tmux, run_tmux, run_tui},
 };
 use serde_json::json;
 use std::{
@@ -172,7 +172,7 @@ fn codex_bundles_skills_and_validates_output() {
             &stage,
             &json!({"prompt":"check the module"}),
             &|message| {
-                assert!(message.contains("tmux attach-session"));
+                assert!(!message.contains("tmux attach-session"));
             },
         )
         .unwrap();
@@ -197,6 +197,15 @@ fn codex_bundles_skills_and_validates_output() {
             .contains(&json!("read-only"))
     );
     assert!(stage.join("SKILL.md").is_file());
+    assert!(!stage.join("tmux.json").exists());
+    assert_eq!(
+        fs::read_to_string(stage.join("stdout.log")).unwrap(),
+        "visible-output\n"
+    );
+    assert_eq!(
+        fs::read_to_string(stage.join("stderr.log")).unwrap(),
+        "visible-diagnostic\n"
+    );
 }
 
 #[test]
@@ -314,6 +323,77 @@ fn codex_rejects_invalid_structured_output() {
         )
         .unwrap_err();
     assert!(error.to_string().contains("contract"));
+}
+
+#[test]
+fn background_stage_streams_logs_without_tmux_and_kills_descendants_on_timeout() {
+    let dir = Sessions::new();
+    let script = dir.path().join("stage.sh");
+    fs::write(&script, "cat > received.txt\necho live-output\necho live-error >&2\nsleep 30 &\necho $! > child.pid\ntouch ready\nwait\n").unwrap();
+    let config = Config {
+        codex_command: vec!["sh".into(), script.display().to_string()],
+        agent_timeout: 1,
+        ..Config::default()
+    };
+    let stage = dir.path().join("stages/bug-hunter");
+    thread::scope(|scope| {
+        let handle = scope.spawn(|| {
+            Codex::new(&config).invoke("bug-hunter", dir.path(), &stage, &json!({}), &|_| {
+                panic!("background stage announced a session")
+            })
+        });
+        ready(&dir.path().join("ready"));
+        assert!(!handle.is_finished());
+        assert!(!stage.join("tmux.json").exists());
+        assert_eq!(
+            fs::read_to_string(stage.join("stdout.log")).unwrap(),
+            "live-output\n"
+        );
+        assert_eq!(
+            fs::read_to_string(stage.join("stderr.log")).unwrap(),
+            "live-error\n"
+        );
+        assert!(
+            handle
+                .join()
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("exit 124")
+        );
+    });
+    let result = read_json(&stage.join("process.json")).unwrap();
+    assert_eq!(result["timed_out"], true);
+    assert!(stage.join("finished").exists());
+    let pid = fs::read_to_string(dir.path().join("child.pid")).unwrap();
+    if let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid.trim())) {
+        assert_eq!(stat.split_whitespace().nth(2), Some("Z"));
+    }
+}
+
+#[test]
+fn tui_timeout_kills_descendants_that_outlive_the_leader() {
+    let dir = Sessions::new();
+    let stage = dir.path().join("stages/coordinator");
+    let script = dir.path().join("tui.py");
+    fs::write(&script, "import os, signal, time\npid = os.fork()\nif pid == 0:\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n    signal.signal(signal.SIGHUP, signal.SIG_IGN)\n    open('descendant.pid', 'w').write(str(os.getpid()))\ntime.sleep(60)\n").unwrap();
+    let error = run_tui(
+        &strings(&["python3", script.to_str().unwrap()]),
+        dir.path(),
+        &stage,
+        1,
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("exit 124"), "{error}");
+    let pid = fs::read_to_string(dir.path().join("descendant.pid")).unwrap();
+    if let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid.trim())) {
+        assert_eq!(
+            stat.split_whitespace().nth(2),
+            Some("Z"),
+            "TUI descendant outlived its leader"
+        );
+    }
 }
 
 #[test]
@@ -448,9 +528,10 @@ fn interrupting_audit_preserves_report_and_session_and_stops_codex() {
     let result = read_json(&stage.join("process.json")).unwrap();
     assert_eq!(result["returncode"], 130);
     assert_eq!(result["timed_out"], false);
-    assert_eq!(
-        result["stderr"],
-        "current caller 'quotes $literal $(echo unsafe)\n"
+    assert!(
+        fs::read_to_string(stage.join("terminal.log"))
+            .unwrap()
+            .contains("current caller 'quotes $literal $(echo unsafe)")
     );
     let pid = fs::read_to_string(pid_path).unwrap();
     assert!(!Path::new(&format!("/proc/{}", pid.trim())).exists());
@@ -463,7 +544,7 @@ fn interrupting_audit_preserves_report_and_session_and_stops_codex() {
             .success()
     );
     cleanup_tmux(&run).unwrap();
-    assert!(stage.join("stdout.log").is_file());
+    assert!(stage.join("terminal.log").is_file());
 }
 
 #[test]

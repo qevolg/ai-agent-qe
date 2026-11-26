@@ -6,9 +6,16 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::{
-    fs::OpenOptions,
+    fs::{self, File, OpenOptions},
     io::{BufRead, Write},
     path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Duration,
 };
 
 fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
@@ -25,7 +32,7 @@ pub fn tools() -> Value {
         ),
         tool(
             "run_stage",
-            "Start a fresh independent Codex stage window, wait for its result and actual execution. Failures are feedback. Repair defective tests/fixtures only; retain product failures as evidence.",
+            "Start a fresh independent background Codex stage process, wait for its result and actual execution. Failures are feedback. Repair defective tests/fixtures only; retain product failures as evidence.",
             json!({"stage":{"type":"string","enum":crate::workflow::STAGES},"instruction":{"type":"string","minLength":1}}),
             &["stage", "instruction"]
         ),
@@ -69,6 +76,17 @@ fn call(harness: &mut AuditHarness<'_>, params: &Value) -> Result<Value> {
     }
 }
 
+struct ServerGuard {
+    _lock: crate::process::WorkerLock,
+    stopped: Arc<AtomicBool>,
+}
+
+impl Drop for ServerGuard {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::SeqCst);
+    }
+}
+
 pub fn serve(directory: &Path) -> Result<()> {
     let saved = read_json(&directory.join("harness.json"))?;
     let config: Config = serde_json::from_value(saved["state"]["config"].clone())?;
@@ -85,13 +103,44 @@ pub fn serve(directory: &Path) -> Result<()> {
     };
     let progress = |message: &str| eprintln!("{message}");
     let mut harness = AuditHarness::open(directory, &agent, &factory, &progress)?;
+    let coordinator = directory.join("stages/coordinator");
+    fs::create_dir_all(&coordinator)?;
+    let marker = coordinator.join("mcp-running");
+    let stopped = Arc::new(AtomicBool::new(false));
+    let _guard = ServerGuard {
+        _lock: crate::process::WorkerLock::new(&marker)?,
+        stopped: stopped.clone(),
+    };
+    let cancel = coordinator.join("cancel");
+    let watch_cancel = saved["state"]["status"] == "running";
+    let parent = unsafe { libc::getppid() };
+    thread::spawn(move || {
+        while !stopped.load(Ordering::SeqCst) {
+            if (watch_cancel && cancel.exists()) || unsafe { libc::getppid() } != parent {
+                crate::process::request_interrupt();
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    });
     let mut stdout = std::io::stdout().lock();
-    let stdin = std::io::stdin();
-    for line in stdin.lock().lines() {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    loop {
         if crate::process::interrupted() {
             break;
         }
-        let line = line?;
+        let line = match receiver.recv_timeout(Duration::from_millis(20)) {
+            Ok(line) => line?,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         let request: Value = match serde_json::from_str(&line) {
             Ok(value) => value,
             Err(error) => {
@@ -121,6 +170,7 @@ pub fn serve(directory: &Path) -> Result<()> {
             "ping" => json!({"result":{}}),
             "tools/list" => json!({"result":{"tools":tools()}}),
             "tools/call" => {
+                harness.reload()?;
                 let result = call(&mut harness, &request["params"]);
                 let (value, error) = match result {
                     Ok(value) => {
@@ -152,6 +202,12 @@ pub fn serve(directory: &Path) -> Result<()> {
             .extend(response.as_object().unwrap().clone());
         writeln!(stdout, "{reply}")?;
         stdout.flush()?;
+        if method == "tools/call"
+            && request["params"]["name"] == "finish"
+            && reply["result"]["isError"] == false
+        {
+            File::create(coordinator.join("audit-finished"))?;
+        }
     }
     Ok(())
 }

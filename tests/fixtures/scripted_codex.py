@@ -2,17 +2,32 @@
 
 import difflib
 import json
+import os
+import signal
 import sys
 import subprocess
 from pathlib import Path
 
 
 def coordinate(arguments, directory):
+    assert "exec" not in arguments
+    assert "--json" not in arguments
+    assert "--output-schema" not in arguments
+    assert "--output-last-message" not in arguments
+    assert "Initial audit status:" in arguments[-1]
+    (directory / "terminal.json").write_text(json.dumps({"stdin":os.isatty(0), "stdout":os.isatty(1), "stderr":os.isatty(2)}))
+    (directory / "tui.pid").write_text(str(os.getpid()))
     overrides = [arguments[i+1] for i, value in enumerate(arguments[:-1]) if value == "-c"]
     settings = dict(value.split("=", 1) for value in overrides)
     assert json.loads(settings.get("mcp_servers.aaqe.default_tools_approval_mode", '"prompt"')) == "approve", "Private harness tools must run with approval_policy=never"
     command = [json.loads(settings["mcp_servers.aaqe.command"])] + json.loads(settings["mcp_servers.aaqe.args"])
     child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    if "--kill-mcp-test" in arguments:
+        def terminate_mcp(signum, frame):
+            child.kill()
+            child.wait()
+            sys.exit(0)
+        signal.signal(signal.SIGTERM, terminate_mcp)
     sequence = 0
     def request(method, params):
         nonlocal sequence
@@ -41,21 +56,32 @@ def coordinate(arguments, directory):
     else:
         result=tool("finish", status="completed", reason="All current candidates were checked independently")
         assert not result["isError"], result
+    print("Audit finished via harness tools; ready for follow-up", flush=True)
+    for line in sys.stdin:
+        status = tool("status")["structuredContent"]["state"]
+        assert status["finished_at"], "Status did not reload the finalized report state"
+        assert tool("run_stage", stage="code-explorer", instruction="after audit")["isError"]
+        (directory / "follow-up.txt").write_text(line)
+        print("Follow-up received", flush=True)
     child.stdin.close()
     assert child.wait(timeout=10) == 0
-    (directory / "output.json").write_text(json.dumps({"summary":"Audit finished via harness tools"}))
 
 
 def main():
     arguments = sys.argv
+    if "--output-schema" not in arguments:
+        overrides = [arguments[i+1] for i, value in enumerate(arguments[:-1]) if value == "-c"]
+        settings = dict(value.split("=", 1) for value in overrides)
+        directory = Path(json.loads(settings["mcp_servers.aaqe.args"])[1]) / "stages/coordinator"
+        return coordinate(arguments, directory)
     stage_directory = Path(arguments[arguments.index("--output-schema") + 1]).parent
     inputs = json.loads((stage_directory / "input.json").read_text())
     sys.stdin.read()
-    if stage_directory.name == "coordinator":
-        return coordinate(arguments, stage_directory)
     stage = inputs.get("stage", stage_directory.name)
     if "--cancel-test" in arguments:
         import time
+        child = subprocess.Popen(["sleep", "60"])
+        (stage_directory / "child.pid").write_text(str(child.pid))
         (stage_directory / "worker.pid").write_text(str(__import__("os").getpid()))
         time.sleep(60)
     output = {

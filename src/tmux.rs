@@ -92,6 +92,86 @@ impl Drop for WorkerGuard<'_> {
     }
 }
 
+pub fn run_tui(
+    argv: &[String],
+    cwd: &Path,
+    directory: &Path,
+    timeout: u64,
+    progress: &dyn Fn(&str),
+) -> Result<()> {
+    fs::create_dir_all(directory)?;
+    let directory = directory.canonicalize()?;
+    let cwd = cwd.canonicalize()?;
+    let session = format!("aaqe-{}", &Uuid::new_v4().simple().to_string()[..12]);
+    let mut guard = WorkerGuard {
+        session: &session,
+        directory: &directory,
+        completed: false,
+    };
+    start_session(
+        &session,
+        &cwd,
+        &directory,
+        &json!({"argv":argv,"cwd":cwd,"timeout":timeout,"interactive":true}),
+    )?;
+    progress(&format!("Codex session: tmux attach-session -t {session}"));
+    let deadline = Instant::now() + Duration::from_secs(timeout.saturating_add(20));
+    loop {
+        if directory.join("audit-finished").exists() {
+            let saved = read_json(
+                &directory
+                    .parent()
+                    .context("Missing stages directory")?
+                    .parent()
+                    .context("Missing run directory")?
+                    .join("harness.json"),
+            )?;
+            if !["completed", "blocked"]
+                .iter()
+                .any(|status| saved["state"]["status"] == *status)
+            {
+                bail!("Coordinator finish acknowledgement has no completed audit state");
+            }
+            guard.completed = true;
+            return Ok(());
+        }
+        if process::interrupted() {
+            bail!("Interrupted by user");
+        }
+        if directory.join("finished").exists() {
+            let result = read_json(&directory.join("process.json"))?;
+            bail!(
+                "Codex coordinator exited without calling finish (exit {}); see {}",
+                result["returncode"],
+                directory.display()
+            );
+        }
+        let pane = tmux(
+            &[
+                "display-message",
+                "-p",
+                "-t",
+                &format!("={session}:"),
+                "#{pane_dead}",
+            ],
+            5,
+        );
+        if pane.returncode != 0 || pane.stdout.trim() == "1" {
+            bail!(
+                "Codex TUI exited before finishing the audit; see {}",
+                directory.display()
+            );
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "Codex coordinator did not finish before timeout; see {}",
+                directory.display()
+            );
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 pub fn run_tmux(
     argv: &[String],
     cwd: &Path,
@@ -113,61 +193,21 @@ pub fn run_tmux(
         stage,
         &Uuid::new_v4().simple().to_string()[..12]
     );
-    let attach = format!("tmux attach-session -t {}", quoted(&session));
-    write_json(
-        &directory.join("tmux.json"),
-        &json!({"session":session,"attach_command":attach}),
-    )?;
-    write_json(
-        &directory.join("invocation.json"),
-        &json!({"argv":argv,"cwd":cwd,"input_path":input_path,"timeout":timeout}),
-    )?;
-    let _ = fs::remove_file(directory.join("finished"));
-    let mut environment = strings(&["env", "-i"]);
-    environment.extend(
-        std::env::vars()
-            .filter(|(name, _)| name != "TMUX" && name != "TMUX_PANE")
-            .map(|(name, value)| format!("{name}={value}")),
-    );
-    let command = format!(
-        "exec {} TMUX=\"$TMUX\" TMUX_PANE=\"$TMUX_PANE\" {}",
-        shell_join(&environment),
-        shell_join(&[
-            executable()?.display().to_string(),
-            "__tmux-worker".to_owned(),
-            directory.display().to_string()
-        ])
-    );
-    let launched = tmux(
-        &[
-            "new-session",
-            "-d",
-            "-s",
-            &session,
-            "-c",
-            &cwd.display().to_string(),
-            &command,
-            ";",
-            "set-option",
-            "-t",
-            &session,
-            "@aaqe_directory",
-            &directory.display().to_string(),
-        ],
-        20,
-    );
     let mut guard = WorkerGuard {
         session: &session,
         directory: &directory,
         completed: false,
     };
-    if launched.returncode != 0 {
-        bail!(
-            "Cannot start Codex tmux session: {}",
-            launched.stderr.trim()
-        );
-    }
-    progress(&format!("Codex session: {attach}"));
+    start_session(
+        &session,
+        &cwd,
+        &directory,
+        &json!({"argv":argv,"cwd":cwd,"input_path":input_path,"timeout":timeout}),
+    )?;
+    progress(&format!(
+        "Codex session: tmux attach-session -t {}",
+        quoted(&session)
+    ));
     let deadline = Instant::now() + Duration::from_secs(timeout.saturating_add(20));
     while !directory.join("finished").exists() {
         if process::interrupted() {
@@ -192,6 +232,63 @@ pub fn run_tmux(
     Ok(result)
 }
 
+fn start_session(
+    session: &str,
+    cwd: &Path,
+    directory: &Path,
+    invocation: &serde_json::Value,
+) -> Result<()> {
+    let attach = format!("tmux attach-session -t {}", quoted(session));
+    write_json(
+        &directory.join("tmux.json"),
+        &json!({"session":session,"attach_command":attach}),
+    )?;
+    write_json(&directory.join("invocation.json"), invocation)?;
+    for marker in ["finished", "cancel", "audit-finished"] {
+        let _ = fs::remove_file(directory.join(marker));
+    }
+    let mut environment = strings(&["env", "-i"]);
+    environment.extend(
+        std::env::vars()
+            .filter(|(name, _)| name != "TMUX" && name != "TMUX_PANE")
+            .map(|(name, value)| format!("{name}={value}")),
+    );
+    let command = format!(
+        "exec {} TMUX=\"$TMUX\" TMUX_PANE=\"$TMUX_PANE\" {}",
+        shell_join(&environment),
+        shell_join(&[
+            executable()?.display().to_string(),
+            "__tmux-worker".to_owned(),
+            directory.display().to_string()
+        ])
+    );
+    let launched = tmux(
+        &[
+            "new-session",
+            "-d",
+            "-s",
+            session,
+            "-c",
+            &cwd.display().to_string(),
+            &command,
+            ";",
+            "set-option",
+            "-t",
+            session,
+            "@aaqe_directory",
+            &directory.display().to_string(),
+        ],
+        20,
+    );
+    if launched.returncode != 0 {
+        bail!(
+            "Cannot start Codex tmux session: {}",
+            launched.stderr.trim()
+        );
+    }
+    Ok(())
+}
+
 // Validate every path and owner before taking any destructive action.
 fn owned_sessions(directory: &Path) -> Result<Vec<(String, PathBuf)>> {
     let directory = directory.canonicalize()?;
@@ -199,7 +296,7 @@ fn owned_sessions(directory: &Path) -> Result<Vec<(String, PathBuf)>> {
     if !stages.exists() {
         return Ok(vec![]);
     }
-    let pattern = Regex::new(r"^aaqe-[A-Za-z0-9_-]+-[0-9a-f]{12}$")?;
+    let pattern = Regex::new(r"^aaqe-(?:[A-Za-z0-9_-]+-)?[0-9a-f]{12}$")?;
     let mut pending = vec![stages];
     let mut metadata_paths = vec![];
     while let Some(path) = pending.pop() {
@@ -290,8 +387,10 @@ pub fn cleanup_tmux(directory: &Path) -> Result<()> {
 }
 
 fn stop_worker(session: &str, directory: &Path) {
+    let _ = File::create(directory.join("cancel"));
     let pane = tmux(&["display-message", "-p", "-t", session, "#{pane_pid}"], 5);
     if pane.returncode != 0 {
+        wait_for_mcp(directory);
         return;
     }
     if let Ok(pid) = pane.stdout.trim().parse::<i32>() {
@@ -306,6 +405,150 @@ fn stop_worker(session: &str, directory: &Path) {
     if !directory.join("finished").exists() {
         let _ = tmux(&["kill-session", "-t", &format!("={session}")], 5);
     }
+    wait_for_mcp(directory);
+}
+
+fn wait_for_mcp(directory: &Path) {
+    process::wait_for_worker(&directory.join("mcp-running"));
+    let mut pending = vec![directory.parent().unwrap().to_owned()];
+    while let Some(path) = pending.pop() {
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    pending.push(entry.path());
+                } else if entry.file_name() == "worker-running" {
+                    process::wait_for_worker(&entry.path());
+                }
+            }
+        }
+    }
+}
+
+fn tui_worker(directory: &Path, invocation: &serde_json::Value) -> Result<()> {
+    let argv: Vec<String> = serde_json::from_value(invocation["argv"].clone())?;
+    let cwd = invocation["cwd"].as_str().context("Missing worker cwd")?;
+    let timeout = invocation["timeout"]
+        .as_u64()
+        .context("Missing worker timeout")?;
+    let started = Instant::now();
+    let pane = std::env::var("TMUX_PANE").context("Missing tmux pane")?;
+    let retained = tmux(
+        &["set-option", "-w", "-t", &pane, "remain-on-exit", "on"],
+        5,
+    );
+    if retained.returncode != 0 {
+        bail!("Cannot retain Codex TUI pane: {}", retained.stderr);
+    }
+    File::create(directory.join("terminal.log"))?;
+    let log_command = format!(
+        "exec cat >> {}",
+        quoted(&directory.join("terminal.log").display().to_string())
+    );
+    let logging = tmux(&["pipe-pane", "-o", "-t", &pane, &log_command], 5);
+    if logging.returncode != 0 {
+        bail!("Cannot record Codex TUI terminal: {}", logging.stderr);
+    }
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let mut registrations = Vec::new();
+    for signal in [libc::SIGTERM, libc::SIGHUP] {
+        registrations.push(signal_hook::flag::register(signal, interrupted.clone())?);
+    }
+    let mut command = Command::new(argv.first().context("Empty worker command")?);
+    command
+        .args(&argv[1..])
+        .current_dir(cwd)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    unsafe {
+        libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+        command.process_group(0).pre_exec(|| {
+            if libc::tcsetpgrp(libc::STDIN_FILENO, libc::getpgrp()) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            libc::signal(libc::SIGTTOU, libc::SIG_DFL);
+            Ok(())
+        });
+    }
+    let mut timed_out = false;
+    let mut cancelled = false;
+    let mut stderr = String::new();
+    let mut group = None;
+    let returncode = match command.spawn() {
+        Err(error) => {
+            stderr = format!("{}: {error}", argv[0]);
+            eprintln!("{stderr}");
+            127
+        }
+        Ok(mut child) => {
+            group = Some(child.id() as i32);
+            let mut termination = None;
+            loop {
+                if let Some(status) = child.try_wait()? {
+                    break status
+                        .code()
+                        .unwrap_or_else(|| -status.signal().unwrap_or(1));
+                }
+                if !directory.join("audit-finished").exists()
+                    && started.elapsed() >= Duration::from_secs(timeout)
+                {
+                    timed_out = true;
+                }
+                if termination.is_none()
+                    && (timed_out
+                        || interrupted.load(Ordering::Relaxed)
+                        || directory.join("cancel").exists())
+                {
+                    cancelled = !timed_out;
+                    File::create(directory.join("cancel"))?;
+                    unsafe {
+                        libc::killpg(child.id() as i32, libc::SIGTERM);
+                    }
+                    termination = Some(Instant::now());
+                }
+                if termination.is_some_and(|time: Instant| time.elapsed() >= Duration::from_secs(3))
+                {
+                    unsafe {
+                        libc::killpg(child.id() as i32, libc::SIGKILL);
+                    }
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+    };
+    unsafe {
+        libc::tcsetpgrp(libc::STDIN_FILENO, libc::getpgrp());
+    }
+    File::create(directory.join("cancel"))?;
+    wait_for_mcp(directory);
+    if let Some(group) = group {
+        unsafe {
+            libc::killpg(group, libc::SIGKILL);
+        }
+    }
+    for registration in registrations {
+        signal_hook::low_level::unregister(registration);
+    }
+    let result = ProcessResult {
+        argv,
+        returncode: if timed_out {
+            124
+        } else if cancelled {
+            130
+        } else {
+            returncode
+        },
+        stdout: String::new(),
+        stderr,
+        elapsed: started.elapsed().as_secs_f64(),
+        timed_out,
+    };
+    write_json(
+        &directory.join("process.json"),
+        &serde_json::to_value(&result)?,
+    )?;
+    File::create(directory.join("finished"))?;
+    Ok(())
 }
 
 fn pump(
@@ -337,6 +580,9 @@ fn pump(
 
 pub fn worker(directory: &Path) -> Result<()> {
     let invocation = read_json(&directory.join("invocation.json"))?;
+    if invocation["interactive"] == true {
+        return tui_worker(directory, &invocation);
+    }
     let argv: Vec<String> = serde_json::from_value(invocation["argv"].clone())?;
     let cwd = invocation["cwd"].as_str().context("Missing worker cwd")?;
     let input = invocation["input_path"]

@@ -1,12 +1,12 @@
 # AI Agent QE · AAQE
 
-用自然语言描述要检查的产品或模块。AAQE 从远程主分支创建独立 Git Worktree，由一个常驻的主 Codex 调度五种阶段角色，每次阶段调用都启动新的独立 Codex 窗口，分析代码、寻找缺陷、编写测试，并在真实 Docker 环境中验证。完成后保存报告和环境，供人工复现。
+用自然语言描述要检查的产品或模块。AAQE 从远程主分支创建独立 Git Worktree，由一个常驻的主 Codex TUI 调度五种阶段角色，每次阶段调用都启动新的独立后台 Codex 进程，分析代码、寻找缺陷、编写测试，并在真实 Docker 环境中验证。完成后保存报告和环境，主 TUI 继续运行，供人工追问和复现。
 
 首版是可以执行的通用工具。产品术语、接口约定、业务预期、镜像及测试环境由被审计项目提供；工具及五个阶段 Skill 不内置具体产品知识。
 
 ## 安装
 
-AAQE 现在使用 Rust 实现，运行时需要 Git、tmux、已登录的 Codex CLI、Docker Engine / Docker Desktop Linux containers，以及 Docker Compose v2。Codex CLI 需支持 `exec --ephemeral --sandbox read-only --output-schema --output-last-message`。在 Debian/Ubuntu 上可用 `sudo apt-get install tmux` 安装 tmux。
+AAQE 现在使用 Rust 实现，运行时需要 Git、tmux、已登录的 Codex CLI、Docker Engine / Docker Desktop Linux containers，以及 Docker Compose v2。Codex CLI 需支持交互入口的 `--no-alt-screen --no-daemon`，以及 `exec --ephemeral --sandbox read-only --output-schema --output-last-message`。在 Debian/Ubuntu 上可用 `sudo apt-get install tmux` 安装 tmux。
 
 在本仓库根目录执行一次：
 
@@ -54,7 +54,7 @@ aaqe run "审计整个产品，优先检查任务生命周期及各模块之间�
 | 6 报告 | Rust | Markdown、JSON 和完整运行记录；保留环境 |
 | 7 清理 | 用户显式调用 | 清理本轮拥有的容器、网络、卷和 tmux 会话；保留报告与 Worktree |
 
-以上数字表示阶段角色，不是固定执行顺序。初始化完成后，一个主 Codex 在自己的 tmux 窗口内持续运行，通过本地 MCP harness 的 `status`、`run_stage`、`finish` 工具取得结果并决定下一步。Rust 不代替模型选择阶段，负责检查依赖、预算、补丁和证据；每次接受 Developer 补丁后执行真实基线与目标测试，再将执行结果反馈给主窗口。
+以上数字表示阶段角色，不是固定执行顺序。初始化完成后，一个主 Codex TUI 在本轮唯一的 tmux 会话内持续运行，通过本地 MCP harness 的 `status`、`run_stage`、`finish` 工具取得结果并决定下一步。阶段使用后台 `codex exec`，不创建 tmux 会话。Rust 不代替模型选择阶段，负责检查依赖、预算、补丁和证据；每次接受 Developer 补丁后执行真实基线与目标测试，再将执行结果反馈给主窗口。
 
 主窗口可以重试阶段、回到上游重新分析、没有候选时提前结束，或说明阻塞原因。重试必须重新开启独立 Codex，不能复用之前阶段的对话。每次调用带上主窗口指令、当前有效产物、执行证据和历史尝试记录。五个阶段的 Skill、角色和 Schema 继续内嵌在二进制中。
 
@@ -64,21 +64,27 @@ aaqe run "审计整个产品，优先检查任务生命周期及各模块之间�
 
 ## 查看 Codex 会话
 
-主调度和每次 AI 阶段调用都在独立、保留的 tmux 会话中启动 `codex exec`。主窗口在本轮中持续运行，每次阶段重试都新开会话。AAQE 在终端打印该阶段的连接命令，例如：
+每轮只有主调度在 tmux 中启动真实的交互式 `codex` TUI。AAQE 在终端打印主会话的连接命令，例如：
 
 ```bash
-tmux attach-session -t aaqe-code-explorer-0123456789ab
+tmux attach-session -t aaqe-0123456789ab
 ```
 
-在同一主机、同一用户的另一个终端执行该命令即可实时查看 Codex 的 JSONL 事件和诊断信息。已在 tmux 内时可用 `tmux switch-client -t SESSION` 切换。使用 tmux 的 prefix 后按 `d` 分离，Codex 会继续运行；默认 prefix 为 `Ctrl+b`，以自己的 tmux 配置为准。
+在同一主机、同一用户的另一个终端执行该命令即可直接查看 Codex TUI、输入消息和使用界面操作。标准输入、输出和错误均直接连接 tmux 的终端。已在 tmux 内时可用 `tmux switch-client -t SESSION` 切换。使用 tmux 的 prefix 后按 `d` 分离，Codex 会继续运行；默认 prefix 为 `Ctrl+b`，以自己的 tmux 配置为准。
 
 Codex CLI 需要支持 stdio MCP 及服务工具授权配置；本次验证版本为 `0.172.0`。
 
-主窗口记录在 `stages/coordinator/`。首次阶段调用保留 `stages/<role>/` 路径，第二次开始使用 `stages/<role>/attempts/0002/` 等目录。每次调用结束后保留 tmux 窗口及滚动历史，可用 `tmux list-sessions` 查找。每个阶段目录的 `tmux.json` 保存会话名和完整 attach 命令；`stdout.log`、`stderr.log` 在运行中持续写入，`process.json` 保存最终退出码与超时状态。tmux 会话属于当前主机，主机或 tmux 服务重启后请查看已保存的日志。
+首次在未获 Codex 信任的仓库运行时，TUI 可能显示目录信任页。请 attach 主会话，核对目录后按 Codex 界面操作继续；AAQE 不代替用户保存目录信任。已信任的仓库可直接进入审计。登录或其他 Codex 初始化提示也可在同一 TUI 内处理，等待时间计入本轮审计超时。
 
-此会话使用 `codex exec`，权限策略仍是 `read-only` 和 `approval_policy="never"`。tmux 提供实时查看，不会开启 Codex TUI 或人工审批。主窗口超时或在 AAQE 终端按 `Ctrl+C` 时，会停止主调度和仍在运行的独立阶段进程；单个阶段超时则将失败结果反馈给主窗口，并保留日志和 tmux 窗口。直接删除正在运行的 tmux 会话会中止该阶段。
+主窗口记录在 `stages/coordinator/`，其中 `tmux.json` 保存会话名和完整 attach 命令，`terminal.log` 实时保存终端输出（含界面控制序列），`tools.jsonl` 保存 harness 调用记录。主 TUI 退出后才写入其 `process.json` 和 `finished`；它们与审计完成状态分开。
 
-第七阶段执行 `aaqe cleanup RUN_ID` 会一并删除本轮记录的 tmux 会话及其窗口，保留已写入磁盘的日志。清理会核对会话的阶段目录归属，不影响其他运行或用户自己的 tmux 会话；已手动删除的会话会跳过。也可通过 `tmux kill-session -t SESSION` 提前删除指定会话。
+阶段 Codex 是独立的后台非交互进程，每次重试都启动新进程。首次阶段调用保留 `stages/<role>/` 路径，第二次开始使用 `stages/<role>/attempts/0002/` 等目录。阶段不生成 `tmux.json`；`stdout.log`、`stderr.log` 在运行中持续写入，`process.json` 保存最终退出码与超时状态，结构化输出和历史尝试继续保留。
+
+主窗口与阶段进程的权限策略均为 `read-only` 和 `approval_policy="never"`。主窗口通过经过依赖、补丁和证据检查的 MCP `finish` 完成审计后，外层 AAQE 生成报告并返回，主 TUI 继续等待输入，且不再受本轮 `loop.timeout` 限制。可以追问保存的结果；已结束的审计不能继续调用阶段或再次结束。
+
+审计期间主窗口超时或在 AAQE 终端按 `Ctrl+C` 时，会停止主调度和仍在运行的后台阶段进程，并保存部分报告。单个阶段超时则将失败结果反馈给主窗口，并保留日志。直接关闭主 TUI 或删除其 tmux 会话也会取消正在运行的阶段。tmux 会话属于当前主机，主机或 tmux 服务重启后请查看已保存的日志。
+
+第七阶段执行 `aaqe cleanup RUN_ID` 会关闭主 TUI 并删除本轮记录的 tmux 会话及其窗口，保留已写入磁盘的日志；旧版运行记录中的阶段会话也兼容清理。清理会核对会话的目录归属，不影响其他运行或用户自己的 tmux 会话；已手动删除的会话会跳过。也可通过 `tmux kill-session -t SESSION` 提前删除指定会话。
 
 ## 项目配置是可选的
 
@@ -124,7 +130,7 @@ loop:
 
 源码、参考资料和 Compose 路径默认相对新 Worktree；外部 `env_file` 相对所读取的配置文件解析为绝对路径。配置在创建 Worktree 前从调用目录读取，因此可使用尚未提交的操作配置。私有连接信息放入环境变量或独立 env 文件，不要写入通用 Skill。
 
-`loop.timeout` 是主调度整轮的秒数上限；`timeouts.agent` 限制每次阶段调用。次数预算耗尽后只能结束并说明原因，不能继续创建阶段窗口。
+`loop.timeout` 是审计从主调度启动到成功调用 `finish` 的秒数上限，不限制审计结束后的 TUI 交互时间；`timeouts.agent` 限制每次阶段调用。次数预算耗尽后只能结束并说明原因，不能继续启动阶段进程。
 
 其他设置：`codex.command` 是可执行命令数组，默认 `[codex]`；`codex.model` 可覆盖模型；`state_dir` 可覆盖运行目录。相对 `state_dir` 以配置文件所在目录解析。
 
@@ -164,7 +170,7 @@ Rust 混合源码文件支持语法树检查：仅可修改顶层 `#[cfg(test)] 
 run.json
 harness.json            # 持久化当前状态、有效产物和证据
 worktree/
-stages/coordinator/     # 主窗口输入、提示词、日志、tools.jsonl
+stages/coordinator/     # 主 TUI 输入、提示词、tmux.json、terminal.log、tools.jsonl
 stages/<stage>/         # 首次调用的 input、prompt、Skill、Schema、输出与进程记录
 stages/<stage>/attempts/0002/  # 第二次及后续独立调用，含 result 和执行证据
 artifacts/              # 当前有效产物；accepted.json 留在各 attempt 中

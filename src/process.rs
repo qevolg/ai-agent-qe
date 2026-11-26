@@ -2,8 +2,9 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::Cell,
-    fs,
+    fs::{self, File},
     io::{Read, Write},
+    os::{fd::AsRawFd, unix::process::CommandExt},
     path::Path,
     process::{Command, Stdio},
     sync::{
@@ -50,6 +51,10 @@ pub fn reset_interrupt() {
     interrupt_flag().store(false, Ordering::SeqCst);
 }
 
+pub fn request_interrupt() {
+    interrupt_flag().store(true, Ordering::SeqCst);
+}
+
 pub fn ignoring_interrupts<T>(function: impl FnOnce() -> T) -> T {
     struct MaskGuard<'a> {
         mask: &'a Cell<bool>,
@@ -86,7 +91,115 @@ pub fn run(
     timeout: u64,
     input: Option<&str>,
 ) -> ProcessResult {
-    run_inner(argv, cwd, timeout, input, &[], true)
+    run_inner(argv, cwd, timeout, input, &[], true, None)
+}
+
+pub fn run_logged(
+    argv: &[String],
+    cwd: &Path,
+    timeout: u64,
+    input: &str,
+    directory: &Path,
+) -> Result<ProcessResult> {
+    let logs = (
+        File::create(directory.join("stdout.log"))?,
+        File::create(directory.join("stderr.log"))?,
+    );
+    let result = run_inner(argv, Some(cwd), timeout, Some(input), &[], true, Some(logs));
+    save_result(&result, directory)?;
+    File::create(directory.join("finished"))?;
+    Ok(result)
+}
+
+pub fn run_stage_worker(directory: &Path) -> Result<ProcessResult> {
+    let mut child = Command::new(crate::tmux::executable()?)
+        .arg("__stage-worker")
+        .arg(directory)
+        .arg(std::process::id().to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(File::create(directory.join("worker.log"))?)
+        .process_group(0)
+        .spawn()?;
+    loop {
+        if interrupted() {
+            File::create(directory.join("cancel"))?;
+        }
+        if let Some(status) = child.try_wait()? {
+            anyhow::ensure!(
+                status.success(),
+                "Stage supervisor failed: {status}; see {}",
+                directory.display()
+            );
+            return Ok(serde_json::from_value(crate::state::read_json(
+                &directory.join("process.json"),
+            )?)?);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+pub fn stage_worker(directory: &Path, parent: u32) -> Result<()> {
+    let _lock = WorkerLock::new(&directory.join("worker-running"))?;
+    let invocation = crate::state::read_json(&directory.join("invocation.json"))?;
+    let argv: Vec<String> = serde_json::from_value(invocation["argv"].clone())?;
+    let cwd = invocation["cwd"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing stage cwd"))?;
+    let timeout = invocation["timeout"]
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("Missing stage timeout"))?;
+    let input = fs::read_to_string(directory.join("prompt.md"))?;
+    let cancel = directory.join("cancel");
+    thread::spawn(move || {
+        loop {
+            if cancel.exists() || unsafe { libc::getppid() } != parent as i32 {
+                request_interrupt();
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    });
+    run_logged(&argv, Path::new(cwd), timeout, &input, directory)?;
+    Ok(())
+}
+
+pub(crate) struct WorkerLock {
+    path: std::path::PathBuf,
+    _file: File,
+}
+
+impl WorkerLock {
+    pub(crate) fn new(path: &Path) -> Result<Self> {
+        let file = File::create(path)?;
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(Self {
+            path: path.to_owned(),
+            _file: file,
+        })
+    }
+}
+
+impl Drop for WorkerLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+pub(crate) fn wait_for_worker(path: &Path) {
+    if let Ok(file) = File::open(path) {
+        loop {
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                break;
+            }
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::WouldBlock {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 pub fn run_env(
@@ -96,7 +209,7 @@ pub fn run_env(
     input: Option<&str>,
     env: &[(String, String)],
 ) -> ProcessResult {
-    run_inner(argv, cwd, timeout, input, env, true)
+    run_inner(argv, cwd, timeout, input, env, true, None)
 }
 
 pub fn run_uninterrupted(
@@ -105,13 +218,28 @@ pub fn run_uninterrupted(
     timeout: u64,
     input: Option<&str>,
 ) -> ProcessResult {
-    run_inner(argv, cwd, timeout, input, &[], false)
+    run_inner(argv, cwd, timeout, input, &[], false, None)
 }
 
-fn read_pipe(mut pipe: impl Read + Send + 'static, sender: mpsc::Sender<Vec<u8>>) {
+fn read_pipe(
+    mut pipe: impl Read + Send + 'static,
+    sender: mpsc::Sender<Vec<u8>>,
+    mut log: Option<File>,
+) {
     thread::spawn(move || {
         let mut data = Vec::new();
-        let _ = pipe.read_to_end(&mut data);
+        let mut buffer = [0u8; 65536];
+        loop {
+            let count = match pipe.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => count,
+            };
+            data.extend_from_slice(&buffer[..count]);
+            if let Some(log) = &mut log {
+                let _ = log.write_all(&buffer[..count]);
+                let _ = log.flush();
+            }
+        }
         let _ = sender.send(data);
     });
 }
@@ -123,6 +251,7 @@ fn run_inner(
     input: Option<&str>,
     env: &[(String, String)],
     allow_interrupt: bool,
+    logs: Option<(File, File)>,
 ) -> ProcessResult {
     let started = Instant::now();
     let mut result = ProcessResult {
@@ -168,8 +297,20 @@ fn run_inner(
     });
     let (stdout_send, stdout_recv) = mpsc::channel();
     let (stderr_send, stderr_recv) = mpsc::channel();
-    read_pipe(child.stdout.take().expect("piped stdout"), stdout_send);
-    read_pipe(child.stderr.take().expect("piped stderr"), stderr_send);
+    let (stdout_log, stderr_log) = match logs {
+        Some((stdout, stderr)) => (Some(stdout), Some(stderr)),
+        None => (None, None),
+    };
+    read_pipe(
+        child.stdout.take().expect("piped stdout"),
+        stdout_send,
+        stdout_log,
+    );
+    read_pipe(
+        child.stderr.take().expect("piped stderr"),
+        stderr_send,
+        stderr_log,
+    );
     let mut stdout = None;
     let mut stderr = None;
     let mut status = None;

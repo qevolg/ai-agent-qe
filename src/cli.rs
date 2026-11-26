@@ -55,6 +55,8 @@ enum Action {
     TmuxWorker { directory: PathBuf },
     #[command(name = "__harness-mcp", hide = true)]
     HarnessMcp { directory: PathBuf },
+    #[command(name = "__stage-worker", hide = true)]
+    StageWorker { directory: PathBuf, parent: u32 },
 }
 #[derive(Subcommand)]
 enum EnvironmentAction {
@@ -89,6 +91,10 @@ fn execute(cli: Cli) -> Result<i32> {
         return Ok(0);
     }
     install_signals()?;
+    if let Some(Action::StageWorker { directory, parent }) = &cli.action {
+        crate::process::stage_worker(directory, *parent)?;
+        return Ok(0);
+    }
     if let Some(Action::HarnessMcp { directory }) = &cli.action {
         crate::mcp::serve(directory)?;
         return Ok(0);

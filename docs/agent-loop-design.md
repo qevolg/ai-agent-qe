@@ -3,8 +3,9 @@
 The user approved implementation and remote publication on 2026-11-25 after
 discussing the following design. One retained Codex coordinator window owns the
 audit's decisions. It invokes a local Rust MCP harness to run any of the five
-existing stage roles. Every invocation starts a fresh independent Codex process
-in its own retained tmux session, including repeated invocations of a role.
+existing stage roles. Each run retains exactly one interactive coordinator TUI in
+tmux, named `aaqe-<12 hex characters>`. Every stage invocation starts a fresh
+independent background `codex exec` process without tmux, including retries.
 
 The coordinator may repeat or revisit stages, request additional evidence, finish
 with no candidates, or report a blocker. Rust enforces prerequisites, allowed
@@ -16,7 +17,7 @@ repaired into passing tests.
 
 The first invocation retains `stages/<role>/` and all existing files. Later
 invocations use `stages/<role>/attempts/<attempt>/`. Each contains input, prompt,
-Skill, schema, output, process logs, tmux ownership and a harness result. Accepted
+Skill, schema, output, process logs and a harness result. Accepted
 artifacts retain immutable per-attempt copies and the existing latest-artifact
 paths. Re-running an upstream stage invalidates downstream active artifacts and
 verdicts without deleting historical evidence. Developer retries replace the
@@ -27,22 +28,35 @@ committed harness snapshot. Explorer references are checked against regular file
 and line bounds at the recorded base, excluding earlier generated tests. Each developer attempt runs a fresh baseline and target tests.
 
 The coordinator has state, run-stage and finish tools. A persistent coordinator
-`codex exec` uses its native tool loop; no model decision loop is recreated in
-Rust. A private stdio MCP subprocess owns the harness state during that session.
+interactive `codex --no-alt-screen --no-daemon` uses its native tool loop with
+stdin, stdout and stderr inherited from the tmux terminal. A private stdio MCP
+subprocess owns the harness state during that session.
 Stage Codex calls cannot inherit the coordinator's dispatch tool. The outer CLI
 always reloads state and writes partial reports after model failure, timeout or
-interruption, and stops any still-running owned stage worker while retaining its
-window and logs. Cleanup discovers coordinator and nested attempt sessions with
-the existing ownership checks. Saved older runs, reports and reproduction remain
-readable.
+interruption, and cancels active background stages while retaining their logs.
+After a validated MCP `finish` response is saved and flushed, its acknowledgement
+allows the outer CLI to generate the report and return. The coordinator remains
+interactive, without the audit timeout; subsequent status calls reload the
+finalized state and further dispatches are rejected. `terminal.log` records the
+TUI terminal stream using tmux pipe-pane without redirecting Codex's streams.
+The coordinator process record is written when the TUI actually exits.
 
-Alternatives considered were one worker session for all roles (less isolation and
-does not meet the per-stage-window request) and serial resume in successive
-windows (shares stage context and moves the decision loop into the host). The
-coordinator plus independent workers meets the agreed requirements.
+Cancellation or a disappearing TUI cancels the MCP server's active process group
+and stage descendants before the outer CLI recovers patches and writes its
+partial report. The MCP server watches its parent and the coordinator cancellation
+marker. Each background stage has a small AAQE supervisor in its own process
+group, watching its original MCP parent and cancellation marker. MCP loss therefore
+cancels the stage even if Codex kills MCP before its own shutdown. Advisory locks
+let shutdown wait for live MCP/stage supervisors while releasing ownership after
+a hard kill. Cleanup discovers the one new coordinator session and legacy nested
+stage sessions with ownership checks. Saved older runs, reports and reproduction
+remain readable.
+
+Independent background workers preserve separate stage contexts and attempts.
+The persistent TUI keeps the coordinator's conversation available after the audit.
 
 Defaults: at most 20 stage calls, at most 4 attempts per role, and 14400 seconds
-for the complete coordinator session, configurable under `loop`. Stage agent,
+until audit finish, configurable under `loop`. Stage agent,
 Docker and test timeouts remain separately enforced. A completed run requires
 current Explorer and Hunter artifacts, and independent validation if candidates
 exist; blocked finish is always available with a reason. No new role definitions

@@ -520,22 +520,24 @@ fn real_docker_workflow_reproduction_and_owned_cleanup() {
         first["tests"][0]["directory"],
         second["tests"][0]["directory"]
     );
+    let session = read_json(&dir.join("stages/coordinator/tmux.json")).unwrap();
+    assert!(
+        !Command::new("tmux")
+            .args([
+                "has-session",
+                "-t",
+                &format!("={}", session["session"].as_str().unwrap())
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
     for stage in aaqe::workflow::STAGES
         .into_iter()
-        .chain(["coordinator", "test-developer/attempts/0002"])
+        .chain(["test-developer/attempts/0002"])
     {
-        let session = read_json(&dir.join("stages").join(stage).join("tmux.json")).unwrap();
-        assert!(
-            !Command::new("tmux")
-                .args([
-                    "has-session",
-                    "-t",
-                    &format!("={}", session["session"].as_str().unwrap())
-                ])
-                .status()
-                .unwrap()
-                .success()
-        );
+        assert!(!dir.join("stages").join(stage).join("tmux.json").exists());
     }
     let rejected = binary()
         .args(["--state-dir", runs.to_str().unwrap(), "reproduce", &id])
