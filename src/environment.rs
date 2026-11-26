@@ -74,6 +74,10 @@ impl ComposeEnvironment {
             );
             let ownership = read_json(&self.env_dir.join("ownership.json"))
                 .context("Compose snapshot integrity check failed")?;
+            ensure!(
+                ownership["project"].as_str() == Some(&self.project),
+                "Environment ownership does not match run ID"
+            );
             let digest = format!("{:x}", Sha256::digest(fs::read(&snapshot)?));
             ensure!(
                 ownership["compose_sha256"].as_str() == Some(&digest),
@@ -83,8 +87,22 @@ impl ComposeEnvironment {
             return Ok(argv);
         }
         let compose = strings(&self.spec["compose_files"]);
+        let inline = self.inline_compose()?;
         ensure!(
-            !compose.is_empty(),
+            inline.is_none() || compose.is_empty(),
+            "Cannot supply both compose_files and inline compose"
+        );
+        if inline.is_some() {
+            argv.extend([
+                "-f".into(),
+                self.env_dir
+                    .join("compose.generated.json")
+                    .to_string_lossy()
+                    .into_owned(),
+            ]);
+        }
+        ensure!(
+            !compose.is_empty() || inline.is_some(),
             "No Docker Compose environment was found; supply project configuration"
         );
         for relative in compose {
@@ -106,7 +124,13 @@ impl ComposeEnvironment {
     }
     fn checked(&self, argv: &[String], label: &str) -> Result<ProcessResult> {
         let result = (self.execute)(argv, self.timeout);
-        save_result(&result, &self.env_dir.join(label))?;
+        save_result(
+            &result,
+            &self
+                .env_dir
+                .join(label)
+                .join(Uuid::new_v4().simple().to_string()),
+        )?;
         ensure!(
             result.returncode == 0,
             "Docker {label} failed (exit {}); environment retained",
@@ -115,12 +139,112 @@ impl ComposeEnvironment {
         Ok(result)
     }
     pub fn start(&self) -> Result<()> {
+        ensure!(
+            !absolute_path(&self.run_dir).starts_with(absolute_path(&self.workspace)),
+            "Environment artifacts must be outside the worktree"
+        );
+        self.validate_spec()?;
         fs::create_dir_all(&self.env_dir)?;
         fs::create_dir_all(&self.results)?;
         let runner = self.spec["runner_service"]
             .as_str()
             .filter(|s| !s.is_empty())
             .context("No test runner service was identified")?;
+        let owned = self.env_dir.join("ownership.json").exists()
+            || self.env_dir.join("compose.resolved.json").exists();
+        if owned {
+            self.arguments(true)?;
+            let ownership = read_json(&self.env_dir.join("ownership.json"))?;
+            if let Some(digest) = ownership["spec_sha256"].as_str() {
+                ensure!(
+                    digest == self.spec_digest()?,
+                    "Compose environment definition is immutable once ownership exists"
+                );
+            }
+        } else {
+            self.create_snapshot(runner)?;
+        }
+        let mut services = strings(&self.spec["services"]);
+        if !services.iter().any(|s| s == runner) {
+            services.push(runner.into());
+        }
+        let mut unique = Vec::new();
+        for service in services {
+            if !unique.contains(&service) {
+                unique.push(service);
+            }
+        }
+        let mut argv = self.arguments(true)?;
+        argv.extend([
+            "up".into(),
+            "-d".into(),
+            "--wait".into(),
+            "--wait-timeout".into(),
+            crate::config::unsigned_integer(&self.spec["readiness_timeout"])
+                .unwrap_or(180)
+                .to_string(),
+        ]);
+        argv.extend(unique);
+        self.checked(&argv, "up")?;
+        if let Some(commands) = self.spec["readiness"].as_array() {
+            for (index, command) in commands.iter().enumerate() {
+                let mut argv = self.arguments(true)?;
+                argv.extend(["exec".into(), "-T".into(), runner.into()]);
+                argv.extend(strings(command));
+                self.checked(&argv, &format!("readiness-{index}"))?;
+            }
+        }
+        Ok(())
+    }
+    fn spec_digest(&self) -> Result<String> {
+        let mut spec = self.spec.clone();
+        spec.sort_all_objects();
+        Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&spec)?)))
+    }
+    fn inline_compose(&self) -> Result<Option<Value>> {
+        let Some(value) = self.spec.get("compose").filter(|value| !value.is_null()) else {
+            return Ok(None);
+        };
+        let document = if let Some(encoded) = value.as_str() {
+            serde_json::from_str(encoded).context("Inline compose must encode a JSON object")?
+        } else {
+            value.clone()
+        };
+        ensure!(document.is_object(), "Inline compose must be a JSON object");
+        Ok(Some(document))
+    }
+    fn validate_spec(&self) -> Result<()> {
+        let files = strings(&self.spec["compose_files"]);
+        if self.inline_compose()?.is_some() {
+            ensure!(
+                files.is_empty(),
+                "Cannot supply both compose_files and inline compose"
+            );
+        }
+        if let Some(readiness) = self.spec.get("readiness") {
+            let commands = readiness
+                .as_array()
+                .context("Readiness must contain argv arrays")?;
+            ensure!(commands.len() <= 32, "Too many readiness commands");
+            for command in commands {
+                let argv = command
+                    .as_array()
+                    .context("Readiness must contain argv arrays")?;
+                ensure!(
+                    !argv.is_empty()
+                        && argv.len() <= 64
+                        && argv
+                            .iter()
+                            .all(|arg| arg.as_str().is_some_and(|s| !s.is_empty()
+                                && s.len() <= 8192
+                                && !s.contains('\0'))),
+                    "Invalid readiness argv"
+                );
+            }
+        }
+        Ok(())
+    }
+    fn create_snapshot(&self, runner: &str) -> Result<()> {
         for name in strings(&self.spec["external_containers"]) {
             let result = self.checked(
                 &[
@@ -154,6 +278,9 @@ impl ComposeEnvironment {
                 "working_dir":workdir,"volumes":[{"type":"bind","source":self.workspace,"target":"/workspace","read_only":true},{"type":"bind","source":self.results,"target":"/aaqe-results"}],"labels":{"io.aaqe.run":self.project}
             }}}),
         )?;
+        if let Some(compose) = self.inline_compose()? {
+            write_json(&self.env_dir.join("compose.generated.json"), &compose)?;
+        }
         let mut argv = self.arguments(false)?;
         argv.extend(["config".into(), "--format".into(), "json".into()]);
         let rendered = self.checked(&argv, "config")?;
@@ -189,30 +316,8 @@ impl ComposeEnvironment {
         write_json(&snapshot, &document)?;
         write_json(
             &self.env_dir.join("ownership.json"),
-            &json!({"project":self.project,"external_containers":self.spec.get("external_containers").cloned().unwrap_or(json!([])),"compose_sha256":format!("{:x}",Sha256::digest(fs::read(snapshot)?))}),
+            &json!({"project":self.project,"external_containers":self.spec.get("external_containers").cloned().unwrap_or(json!([])),"compose_sha256":format!("{:x}",Sha256::digest(fs::read(snapshot)?)),"spec_sha256":self.spec_digest()?}),
         )?;
-        let mut services = strings(&self.spec["services"]);
-        if !services.iter().any(|s| s == runner) {
-            services.push(runner.into());
-        }
-        let mut unique = Vec::new();
-        for service in services {
-            if !unique.contains(&service) {
-                unique.push(service);
-            }
-        }
-        let mut argv = self.arguments(true)?;
-        argv.extend([
-            "up".into(),
-            "-d".into(),
-            "--wait".into(),
-            "--wait-timeout".into(),
-            crate::config::unsigned_integer(&self.spec["readiness_timeout"])
-                .unwrap_or(180)
-                .to_string(),
-        ]);
-        argv.extend(unique);
-        self.checked(&argv, "up")?;
         Ok(())
     }
     pub fn execute_test(&self, command: &[String], test_id: &str, timeout: u64) -> Result<Value> {

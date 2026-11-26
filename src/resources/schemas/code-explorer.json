@@ -80,6 +80,28 @@
         "readiness_timeout": {
           "type": "integer",
           "minimum": 1
+        },
+        "compose": {
+          "type": [
+            "object",
+            "string",
+            "null"
+          ],
+          "description": "Inline Docker Compose object, or a JSON-encoded object. Mutually exclusive with nonempty compose_files."
+        },
+        "readiness": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8192
+            }
+          }
         }
       },
       "required": [

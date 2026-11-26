@@ -3,6 +3,7 @@ pub mod codex;
 pub mod config;
 pub mod contracts;
 pub mod environment;
+pub mod environment_probe;
 pub mod evidence;
 pub mod gitops;
 pub mod harness;
