@@ -3,6 +3,86 @@ use serde_json::json;
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
 #[test]
+fn ssh_and_go_tool_inventory_use_their_supported_version_commands() {
+    if std::env::var_os("AAQE_TOOL_VERSION_CHILD").is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        for (tool, flag) in [("ssh", "-V"), ("go", "version")] {
+            let executable = temp.path().join(tool);
+            fs::write(&executable, format!("#!/bin/sh\n[ \"$#\" = 1 ] && [ \"$1\" = '{flag}' ] || exit 2\nprintf '%s\\n' '{tool} installed version'\n")).unwrap();
+            fs::set_permissions(executable, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "ssh_and_go_tool_inventory_use_their_supported_version_commands",
+                "--nocapture",
+            ])
+            .env("AAQE_TOOL_VERSION_CHILD", "1")
+            .env("PATH", temp.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    let workspace = tempfile::tempdir().unwrap();
+    let evidence = tempfile::tempdir().unwrap();
+    let value = inspect(
+        workspace.path(),
+        evidence.path(),
+        &json!({"kind":"tools","tools":["ssh", "go"]}),
+        3,
+    )
+    .unwrap();
+    assert_eq!(value["success"], true);
+    assert_eq!(value["results"][0]["stdout"], "ssh installed version\n");
+    assert_eq!(value["results"][1]["stdout"], "go installed version\n");
+}
+
+#[test]
+fn bounded_ssh_capture_drains_both_streams_and_redacts_clipped_password_prefixes() {
+    if std::env::var_os("AAQE_CAPTURE_CHILD").is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let ssh = temp.path().join("ssh");
+        fs::write(&ssh, "#!/usr/bin/python3\nimport os, sys\npayload = b'x' * (65536 - 8) + os.environ['AAQE_TEST_PASSWORD'].encode() + b'y' * (2 * 1024 * 1024)\nsys.stdout.buffer.write(payload)\nsys.stderr.buffer.write(payload)\n").unwrap();
+        fs::set_permissions(ssh, fs::Permissions::from_mode(0o700)).unwrap();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "bounded_ssh_capture_drains_both_streams_and_redacts_clipped_password_prefixes",
+                "--nocapture",
+            ])
+            .env("AAQE_CAPTURE_CHILD", "1")
+            .env("AAQE_TEST_PASSWORD", "sensitive-password-boundary-987")
+            .env("PATH", temp.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    let workspace = tempfile::tempdir().unwrap();
+    let evidence = tempfile::tempdir().unwrap();
+    let value = inspect(
+        workspace.path(),
+        evidence.path(),
+        &json!({"kind":"ssh_inventory","host":"example.test","password_env":"AAQE_TEST_PASSWORD"}),
+        3,
+    )
+    .unwrap();
+    assert_eq!(value["success"], true);
+    assert_eq!(value["capture_limit_bytes"], 65536);
+    for stream in ["stdout", "stderr"] {
+        let output = value["results"][0][stream].as_str().unwrap();
+        assert!(output.len() <= 65536 + 32);
+        assert!(output.contains("[output truncated]"));
+        assert!(!output.contains("sensitiv"));
+        let path = std::path::Path::new(value["directory"].as_str().unwrap())
+            .join("process-0")
+            .join(format!("{stream}.log"));
+        assert!(!fs::read_to_string(path).unwrap().contains("sensitiv"));
+    }
+}
+
+#[test]
 fn endpoint_failure_is_recorded_as_unhealthy_with_real_http_status() {
     use std::{
         io::{Read, Write},

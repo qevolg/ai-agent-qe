@@ -1,6 +1,6 @@
 //! Bounded, recorded inventory. Remote hosts are never deployment targets.
 use crate::{
-    process::{run_env, save_result},
+    process::{OUTPUT_TRUNCATED, run_env_bounded, save_result},
     state::{absolute_path, write_json},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -8,17 +8,38 @@ use serde_json::{Value, json};
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 use uuid::Uuid;
 
-const TOOLS: &[&str] = &[
-    "git", "docker", "java", "javac", "mvn", "gradle", "python", "python3", "pip", "pip3", "node",
-    "npm", "cargo", "rustc", "go", "cmake", "make", "gcc", "clang", "curl", "ssh",
+const TOOLS: &[(&str, &[&str])] = &[
+    ("git", &["--version"]),
+    ("docker", &["--version"]),
+    ("java", &["-version"]),
+    ("javac", &["-version"]),
+    ("mvn", &["--version"]),
+    ("gradle", &["--version"]),
+    ("python", &["--version"]),
+    ("python3", &["--version"]),
+    ("pip", &["--version"]),
+    ("pip3", &["--version"]),
+    ("node", &["--version"]),
+    ("npm", &["--version"]),
+    ("cargo", &["--version"]),
+    ("rustc", &["--version"]),
+    ("go", &["version"]),
+    ("cmake", &["--version"]),
+    ("make", &["--version"]),
+    ("gcc", &["--version"]),
+    ("clang", &["--version"]),
+    ("curl", &["--version"]),
+    ("ssh", &["-V"]),
 ];
 const INVENTORY: &str =
     "uname -s; docker version --format '{{json .}}'; docker ps --all --format '{{json .}}'";
+const CAPTURE_LIMIT: usize = 65536;
 
 pub fn schema() -> Value {
+    let tool_names: Vec<_> = TOOLS.iter().map(|(name, _)| *name).collect();
     json!({"type":"object","properties":{
         "kind":{"type":"string","enum":["tools","docker","endpoint","ssh_inventory"]},
-        "tools":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string","enum":TOOLS}},
+        "tools":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string","enum":tool_names}},
         "url":{"type":"string","minLength":1,"maxLength":4096},
         "host":{"type":"string","minLength":1,"maxLength":253},
         "user":{"type":"string","minLength":1,"maxLength":64},
@@ -87,13 +108,13 @@ pub fn inspect(workspace: &Path, directory: &Path, probe: &Value, timeout: u64) 
             );
             for tool in tools {
                 let tool = tool.as_str().context("Invalid tool name")?;
-                ensure!(TOOLS.contains(&tool), "Unsupported inventory tool");
-                let flag = if matches!(tool, "java" | "javac") {
-                    "-version"
-                } else {
-                    "--version"
-                };
-                commands.push(vec![tool.into(), flag.into()]);
+                let (_, arguments) = TOOLS
+                    .iter()
+                    .find(|(name, _)| *name == tool)
+                    .context("Unsupported inventory tool")?;
+                let mut argv = vec![tool.into()];
+                argv.extend(arguments.iter().map(|argument| (*argument).into()));
+                commands.push(argv);
             }
         }
         "docker" => {
@@ -233,24 +254,39 @@ pub fn inspect(workspace: &Path, directory: &Path, probe: &Value, timeout: u64) 
     }
     let mut results = Vec::new();
     for (index, argv) in commands.iter().enumerate() {
-        let mut result = run_env(argv, Some(workspace), timeout, None, &env);
+        let mut result = run_env_bounded(argv, Some(workspace), timeout, None, &env, CAPTURE_LIMIT);
         if let Some(password) = &password {
-            for text in result
-                .argv
-                .iter_mut()
-                .chain([&mut result.stdout, &mut result.stderr])
-            {
+            for text in &mut result.argv {
                 *text = text.replace(password, "[REDACTED]");
             }
-        }
-        for output in [&mut result.stdout, &mut result.stderr] {
-            if output.len() > 65536 {
-                let mut end = 65536;
-                while !output.is_char_boundary(end) {
-                    end -= 1;
+            for output in [&mut result.stdout, &mut result.stderr] {
+                let truncated = output.ends_with(OUTPUT_TRUNCATED);
+                let mut body = output
+                    .strip_suffix(OUTPUT_TRUNCATED)
+                    .unwrap_or(output)
+                    .replace(password, "[REDACTED]");
+                if truncated {
+                    // A password can straddle the capture boundary. Full matches
+                    // were redacted above; discard the remaining possible prefix
+                    // plus a possible UTF-8 replacement character at the cutoff.
+                    let mut end = body.len().saturating_sub(password.len().saturating_add(3));
+                    while !body.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    body.truncate(end);
                 }
-                output.truncate(end);
-                output.push_str("\n[output truncated]");
+                let expanded = body.len() > CAPTURE_LIMIT;
+                if expanded {
+                    let mut end = CAPTURE_LIMIT;
+                    while !body.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    body.truncate(end);
+                }
+                if truncated || expanded {
+                    body.push_str(&OUTPUT_TRUNCATED.replace(password, "[REDACTED]"));
+                }
+                *output = body;
             }
         }
         save_result(&result, &directory.join(format!("process-{index}")))?;
@@ -259,7 +295,7 @@ pub fn inspect(workspace: &Path, directory: &Path, probe: &Value, timeout: u64) 
     if askpass.exists() {
         fs::remove_file(askpass)?;
     }
-    let mut evidence = json!({"probe":probe,"directory":directory,"success":results.iter().all(|result|result.returncode == 0),"results":results});
+    let mut evidence = json!({"probe":probe,"directory":directory,"capture_limit_bytes":CAPTURE_LIMIT,"success":results.iter().all(|result|result.returncode == 0),"results":results});
     // A caller can accidentally reuse a password as another field. Redact the entire
     // evidence document as well as process streams before it reaches disk.
     if let Some(password) = password {

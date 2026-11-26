@@ -85,13 +85,46 @@ pub struct ProcessResult {
     pub timed_out: bool,
 }
 
+pub const OUTPUT_TRUNCATED: &str = "\n[output truncated]";
+
+#[derive(Default)]
+struct Capture {
+    logs: Option<(File, File)>,
+    limit: Option<usize>,
+}
+
+#[derive(Default)]
+struct PipeOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+impl PipeOutput {
+    fn text(self, limit: Option<usize>) -> String {
+        let mut text = String::from_utf8_lossy(&self.bytes).into_owned();
+        let mut truncated = self.truncated;
+        if let Some(limit) = limit.filter(|limit| text.len() > *limit) {
+            let mut end = limit;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+            truncated = true;
+        }
+        if truncated {
+            text.push_str(OUTPUT_TRUNCATED);
+        }
+        text
+    }
+}
+
 pub fn run(
     argv: &[String],
     cwd: Option<&Path>,
     timeout: u64,
     input: Option<&str>,
 ) -> ProcessResult {
-    run_inner(argv, cwd, timeout, input, &[], true, None)
+    run_inner(argv, cwd, timeout, input, &[], true, Capture::default())
 }
 
 pub fn run_logged(
@@ -105,7 +138,18 @@ pub fn run_logged(
         File::create(directory.join("stdout.log"))?,
         File::create(directory.join("stderr.log"))?,
     );
-    let result = run_inner(argv, Some(cwd), timeout, Some(input), &[], true, Some(logs));
+    let result = run_inner(
+        argv,
+        Some(cwd),
+        timeout,
+        Some(input),
+        &[],
+        true,
+        Capture {
+            logs: Some(logs),
+            limit: None,
+        },
+    );
     save_result(&result, directory)?;
     File::create(directory.join("finished"))?;
     Ok(result)
@@ -209,7 +253,31 @@ pub fn run_env(
     input: Option<&str>,
     env: &[(String, String)],
 ) -> ProcessResult {
-    run_inner(argv, cwd, timeout, input, env, true, None)
+    run_inner(argv, cwd, timeout, input, env, true, Capture::default())
+}
+
+/// Retain at most `limit` bytes per stream while continuing to drain pipes.
+/// Truncated streams include OUTPUT_TRUNCATED in their recorded evidence.
+pub fn run_env_bounded(
+    argv: &[String],
+    cwd: Option<&Path>,
+    timeout: u64,
+    input: Option<&str>,
+    env: &[(String, String)],
+    limit: usize,
+) -> ProcessResult {
+    run_inner(
+        argv,
+        cwd,
+        timeout,
+        input,
+        env,
+        true,
+        Capture {
+            logs: None,
+            limit: Some(limit),
+        },
+    )
 }
 
 pub fn run_uninterrupted(
@@ -218,29 +286,36 @@ pub fn run_uninterrupted(
     timeout: u64,
     input: Option<&str>,
 ) -> ProcessResult {
-    run_inner(argv, cwd, timeout, input, &[], false, None)
+    run_inner(argv, cwd, timeout, input, &[], false, Capture::default())
 }
 
 fn read_pipe(
     mut pipe: impl Read + Send + 'static,
-    sender: mpsc::Sender<Vec<u8>>,
+    sender: mpsc::Sender<PipeOutput>,
     mut log: Option<File>,
+    limit: Option<usize>,
 ) {
     thread::spawn(move || {
-        let mut data = Vec::new();
+        let mut output = PipeOutput::default();
         let mut buffer = [0u8; 65536];
         loop {
             let count = match pipe.read(&mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(count) => count,
             };
-            data.extend_from_slice(&buffer[..count]);
+            let retained = count.min(
+                limit
+                    .unwrap_or(usize::MAX)
+                    .saturating_sub(output.bytes.len()),
+            );
+            output.bytes.extend_from_slice(&buffer[..retained]);
+            output.truncated |= retained < count;
             if let Some(log) = &mut log {
-                let _ = log.write_all(&buffer[..count]);
+                let _ = log.write_all(&buffer[..retained]);
                 let _ = log.flush();
             }
         }
-        let _ = sender.send(data);
+        let _ = sender.send(output);
     });
 }
 
@@ -251,7 +326,7 @@ fn run_inner(
     input: Option<&str>,
     env: &[(String, String)],
     allow_interrupt: bool,
-    logs: Option<(File, File)>,
+    capture: Capture,
 ) -> ProcessResult {
     let started = Instant::now();
     let mut result = ProcessResult {
@@ -297,7 +372,7 @@ fn run_inner(
     });
     let (stdout_send, stdout_recv) = mpsc::channel();
     let (stderr_send, stderr_recv) = mpsc::channel();
-    let (stdout_log, stderr_log) = match logs {
+    let (stdout_log, stderr_log) = match capture.logs {
         Some((stdout, stderr)) => (Some(stdout), Some(stderr)),
         None => (None, None),
     };
@@ -305,11 +380,13 @@ fn run_inner(
         child.stdout.take().expect("piped stdout"),
         stdout_send,
         stdout_log,
+        capture.limit,
     );
     read_pipe(
         child.stderr.take().expect("piped stderr"),
         stderr_send,
         stderr_log,
+        capture.limit,
     );
     let mut stdout = None;
     let mut stderr = None;
@@ -352,10 +429,10 @@ fn run_inner(
     }
     let status = status.or_else(|| child.wait().ok());
     let _ = writer.join();
-    result.stdout = String::from_utf8_lossy(&stdout.unwrap_or_default()).into_owned();
+    result.stdout = stdout.unwrap_or_default().text(capture.limit);
     result
         .stderr
-        .push_str(&String::from_utf8_lossy(&stderr.unwrap_or_default()));
+        .push_str(&stderr.unwrap_or_default().text(capture.limit));
     result.returncode = if result.timed_out {
         124
     } else if cancelled {
@@ -387,4 +464,24 @@ pub fn save_result(result: &ProcessResult, directory: &Path) -> Result<()> {
         &directory.join("process.json"),
         &serde_json::to_value(result)?,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn bounded_pipe_reader_retains_only_the_prefix_while_draining_all_bytes() {
+        let (sender, receiver) = mpsc::channel();
+        read_pipe(
+            Cursor::new(vec![b'x'; 2 * 1024 * 1024]),
+            sender,
+            None,
+            Some(65536),
+        );
+        let output = receiver.recv().unwrap();
+        assert_eq!(output.bytes.len(), 65536);
+        assert!(output.truncated);
+    }
 }
