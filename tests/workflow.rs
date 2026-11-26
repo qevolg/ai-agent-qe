@@ -405,6 +405,12 @@ impl Drop for Cleanup {
 #[test]
 #[ignore = "requires a running Docker daemon, tmux and python3 for the deterministic model fixture"]
 fn real_docker_workflow_reproduction_and_owned_cleanup() {
+    real_docker_scenario(false);
+    real_docker_scenario(true);
+}
+
+fn real_docker_scenario(early_inline: bool) {
+    eprintln!("real Docker scenario: early_inline={early_inline}");
     let temp = tempfile::tempdir().unwrap();
     let root = repository(temp.path());
     let project = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -423,6 +429,9 @@ fn real_docker_workflow_reproduction_and_owned_cleanup() {
         root.join("tests/test_baseline.py"),
     )
     .unwrap();
+    if early_inline {
+        fs::remove_file(root.join("compose.yaml")).unwrap();
+    }
     command(&root, &["add", "."]);
     command(&root, &["commit", "-m", "runnable example"]);
     command(&root, &["push", "origin", "main"]);
@@ -430,7 +439,17 @@ fn real_docker_workflow_reproduction_and_owned_cleanup() {
     let config_file = root.join("aaqe.yaml");
     let mut config: Value =
         serde_yaml::from_str(&fs::read_to_string(&config_file).unwrap()).unwrap();
-    config["codex"] = json!({"command":["python3",project.join("tests/fixtures/scripted_codex.py"),"--retry-developer"]});
+    let mut fixture_command = vec![
+        json!("python3"),
+        json!(project.join("tests/fixtures/scripted_codex.py")),
+        json!("--retry-developer"),
+    ];
+    if early_inline {
+        fixture_command.push(json!("--early-inline"));
+        config["environment"] = json!({});
+        config["baseline"] = json!([]);
+    }
+    config["codex"] = json!({"command":fixture_command});
     fs::write(&config_file, serde_yaml::to_string(&config).unwrap()).unwrap();
     let runs = temp.path().join("runs");
     let output = binary()
@@ -451,11 +470,56 @@ fn real_docker_workflow_reproduction_and_owned_cleanup() {
     };
     assert!(
         output.status.success(),
-        "{}\n{}",
+        "{}\n{}\nCoordinator: {}",
         String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&output.stderr),
+        fs::read_to_string(dir.join("stages/coordinator/terminal.log")).unwrap_or_default()
     );
     let report = read_json(&dir.join("report.json")).unwrap();
+    if early_inline {
+        let workspace = Path::new(state["workspace"]["path"].as_str().unwrap());
+        assert!(!workspace.join("compose.yaml").exists());
+        assert!(!workspace.join("readiness-must-not-write").exists());
+        assert!(dir.join("environment/compose.generated.json").is_file());
+        assert_eq!(
+            fs::read_to_string(dir.join("executions/early-ready")).unwrap(),
+            "ready before Explorer and Developer"
+        );
+        let readiness: Vec<_> = fs::read_dir(dir.join("environment/readiness-0"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(
+            readiness.len(),
+            1,
+            "Ready reuse reran readiness unexpectedly"
+        );
+        assert_eq!(
+            read_json(&readiness[0].join("process.json")).unwrap()["returncode"],
+            0
+        );
+        let explorer = read_json(&dir.join("stages/code-explorer/input.json")).unwrap();
+        assert_eq!(explorer["environment_ready"], true);
+        assert_eq!(
+            report["environment_actions"][0]["operation"],
+            "inspect_environment"
+        );
+        assert_eq!(
+            report["environment_actions"][1]["operation"],
+            "prepare_environment"
+        );
+        assert_eq!(report["execution_attempts"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            report["execution"]["baseline"][0]["for_test_id"],
+            "negative-input"
+        );
+        assert!(
+            report["execution_attempts"][2]["directory"]
+                .as_str()
+                .unwrap()
+                .contains("executions/rounds/")
+        );
+    }
     assert_eq!(report["verdicts"][0]["status"], "confirmed");
     assert_eq!(
         report["execution"]["baseline"][0]["result"]["returncode"],

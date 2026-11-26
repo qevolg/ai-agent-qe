@@ -184,7 +184,7 @@ impl AuditHarness<'_> {
                 .context("Missing prerequisite: test-developer")?
                 .clone();
             if let Some(ids) = test_ids {
-                let selected: HashSet<_> = ids.iter().collect();
+                let selected: HashSet<_> = ids.iter().map(String::as_str).collect();
                 ensure!(
                     !ids.is_empty() && selected.len() == ids.len(),
                     "Select a nonempty unique test subset"
@@ -198,7 +198,7 @@ impl AuditHarness<'_> {
                 output["tests"] = json!(
                     tests
                         .iter()
-                        .filter(|t| selected.contains(&t["id"].as_str().unwrap().to_owned()))
+                        .filter(|t| selected.contains(t["id"].as_str().unwrap()))
                         .cloned()
                         .collect::<Vec<_>>()
                 );

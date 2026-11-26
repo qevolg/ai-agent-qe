@@ -43,12 +43,39 @@ def coordinate(arguments, directory):
     assert {tool["name"] for tool in request("tools/list", {})["tools"]} == {"status", "run_stage", "inspect_environment", "prepare_environment", "execute_tests", "finish"}
     assert tool("run_stage", stage="test-developer", instruction="too early")["isError"]
     assert tool("finish", status="completed", reason="too early")["isError"]
+    if "--early-inline" in arguments:
+        inspected = tool("inspect_environment", probe={"kind":"docker"})
+        assert not inspected["isError"], inspected
+        assert inspected["structuredContent"]["result"]["success"], inspected
+        readiness = """from pathlib import Path
+import errno
+assert not Path('/workspace/tests/test_regression.py').exists()
+try:
+    Path('/workspace/readiness-must-not-write').write_text('forbidden')
+except OSError as error:
+    assert error.errno == errno.EROFS, error
+else:
+    raise AssertionError('worktree mount was writable')
+Path('/aaqe-results/early-ready').write_text('ready before Explorer and Developer')
+"""
+        prepared = tool("prepare_environment", environment={
+            "compose": {"services":{"runner":{"image":"python:3.12-slim", "command":["sleep","infinity"], "init":True, "environment":{"PYTHONDONTWRITEBYTECODE":"1"}}}},
+            "services":["runner"], "runner_service":"runner", "runner_workdir":"/workspace",
+            "external_containers":[], "readiness_timeout":90,
+            "readiness":[["python", "-c", readiness]],
+        })
+        assert not prepared["isError"], prepared
+        assert prepared["structuredContent"]["result"]["environment_ready"], prepared
     stages = ["code-explorer", "bug-hunter", "test-designer", "test-developer", "test-validator"]
     if "--retry-developer" in arguments:
         stages.insert(4, "test-developer")
     if "--loop-test" in arguments or "--cancel-test" in arguments:
         stages = ["code-explorer", "code-explorer", "bug-hunter"]
     for stage in stages:
+        if stage == "test-validator" and "--early-inline" in arguments:
+            rerun = tool("execute_tests", test_ids=["negative-input"])
+            assert not rerun["isError"], rerun
+            assert rerun["structuredContent"]["execution"]["tests"][0]["junit"]["complete"], rerun
         result = tool("run_stage", stage=stage, instruction="Inspect current evidence and perform this role independently")
         if result["isError"]:
             tool("finish", status="blocked", reason=result["content"][0]["text"])
@@ -186,6 +213,12 @@ def main():
                 }
             ],
         }
+    if "--early-inline" in arguments:
+        assert inputs["environment_ready"], "Early preparation did not reach the worker"
+        if stage == "code-explorer":
+            output[stage]["environment"] = inputs["environment"]
+        if stage == "test-developer":
+            output[stage]["tests"][0]["baseline"] = [["python", "run_tests.py", "tests/test_baseline.py", "{result_dir}/baseline.xml"]]
     if "--loop-test" in arguments and stage == "bug-hunter":
         output[stage]["candidates"] = []
     Path(arguments[arguments.index("--output-last-message") + 1]).write_text(

@@ -54,7 +54,7 @@ aaqe run "审计整个产品，优先检查任务生命周期及各模块之间�
 | 6 报告 | Rust | Markdown、JSON 和完整运行记录；保留环境 |
 | 7 清理 | 用户显式调用 | 清理本轮拥有的容器、网络、卷和 tmux 会话；保留报告与 Worktree |
 
-以上数字表示阶段角色，不是固定执行顺序。初始化完成后，一个主 Codex TUI 在本轮唯一的 tmux 会话内持续运行，通过本地 MCP harness 的 `status`、`run_stage`、`finish` 工具取得结果并决定下一步。阶段使用后台 `codex exec`，不创建 tmux 会话。Rust 不代替模型选择阶段，负责检查依赖、预算、补丁和证据；每次接受 Developer 补丁后执行真实基线与目标测试，再将执行结果反馈给主窗口。
+以上数字表示阶段角色，不是固定执行顺序。初始化完成后，一个主 Codex TUI 在本轮唯一的 tmux 会话内持续运行，通过本地 MCP harness 的 `status`、`run_stage`、`inspect_environment`、`prepare_environment`、`execute_tests`、`finish` 工具取得结果并决定下一步。阶段使用后台 `codex exec`，不创建 tmux 会话。Rust 不代替模型选择阶段，负责检查依赖、预算、补丁和证据；每次接受 Developer 补丁后执行真实基线与目标测试，再将执行结果反馈给主窗口。
 
 主窗口可以重试阶段、回到上游重新分析、没有候选时提前结束，或说明阻塞原因。重试必须重新开启独立 Codex，不能复用之前阶段的对话。每次调用带上主窗口指令、当前有效产物、执行证据和历史尝试记录。五个阶段的 Skill、角色和 Schema 继续内嵌在二进制中。
 
@@ -136,7 +136,7 @@ loop:
 
 ## Docker 环境约定
 
-项目提供 Compose 文件，使用已有服务镜像。AAQE 为每轮分配唯一 Compose project，通过 `up --wait` 启动选定服务。配置健康检查和必要的真实协议就绪检查，确保服务不仅启动而且可用。
+项目提供 Compose 文件或由主调度提交 inline Compose，使用已有服务镜像。AAQE 为每轮分配唯一 Compose project，通过 `up --wait` 启动选定服务。配置健康检查和必要的真实协议就绪检查，确保服务不仅启动而且可用。
 
 Runner 必须是持续运行的容器。AAQE 自动为它增加：
 
@@ -149,6 +149,51 @@ Runner 必须是持续运行的容器。AAQE 自动为它增加：
 外部现成容器放入 `external_containers`；AAQE 只检查它们是否运行。通过项目定义的 external network 或宿主机端点连接；不会修改它们的网络，也不会在 cleanup 中删除它们。容器自身的业务就绪检查由项目提供。独立启动的服务应使用项目隔离的网络、卷和测试数据名称；不要指定固定 `container_name`。
 
 最小可运行项目见 `examples/minimal/`。它使用 Python 的现成镜像、标准库测试驱动和 JUnit 输出，无需安装项目特有的测试框架。
+
+## 提前准备环境与独立重跑
+
+主调度还可使用 `inspect_environment`、`prepare_environment` 和 `execute_tests` 三个 MCP 工具。它们只在审计运行期间可用；不是新的 CLI 子命令。
+
+`inspect_environment({"probe":{"kind":"tools","tools":["java","mvn"]}})` 保存宿主机工具版本证据；`kind: docker` 检查本地 Docker/Compose；`kind: endpoint` 配合 `url` 发起 HTTP(S) HEAD 探测。工具清单只接受内置允许的可执行名称和固定版本参数，不运行任意 shell。缺少宿主机 Maven 不代表 Runner 里没有 Maven，也不代表无法设计测试。阶段会收到已记录的环境、就绪标志和探测结果。
+
+`prepare_environment` 可在 Explorer 或 Developer 之前调用。可从项目文件发现环境，也可显式提交以下定义；项目 `aaqe.yaml` 中的环境字段优先于显式参数，显式参数优先于 Explorer 推断。Compose 来源替换时清除继承的另一种来源，同一份定义不能同时提供非空 `compose_files` 和 `compose`。
+
+```json
+{
+  "environment": {
+    "compose": {
+      "services": {
+        "runner": {
+          "image": "python:3.12-slim",
+          "command": ["sleep", "infinity"],
+          "environment": {"PYTHONDONTWRITEBYTECODE": "1"}
+        }
+      }
+    },
+    "services": ["runner"],
+    "runner_service": "runner",
+    "runner_workdir": "/workspace",
+    "readiness_timeout": 90,
+    "readiness": [["python", "--version"]]
+  }
+}
+```
+
+上例仅演示协议；实际镜像、版本与 readiness 应来自目标项目。`compose` 接受对象或编码了对象的 JSON 字符串；模型 Schema 使用字符串表示任意 Compose 对象。AAQE 将其写入运行目录的 `environment/compose.generated.json`，不会写入产品 Worktree。Runner 仍挂载只读源码与可写结果目录。Compose `up --wait` 完成后，harness 在 Runner 内逐项执行 `readiness` argv；可使用项目提供的真实协议探测命令。
+
+创建所有权快照前可修正环境定义。存在 `environment/ownership.json` 或环境已启动后，定义锁定，即使启动或 readiness 失败也不能替换。对相同定义再次调用 `prepare_environment` 可恢复启动/就绪检查；已 ready 时重复调用不再启动服务。需更换已拥有资源的定义时保存本轮并新开审计。
+
+Designer 的 `blocked_reason` 表示缺少可靠 oracle 或无法实现测试。可实现但缺少服务、编译器等运行条件时，使用 `execution_blocked_reason`，Developer 仍可生成测试。独立的单元、集成与 E2E 场景使用不同 test ID。全部计划都因设计原因受阻时，Validator 可在没有 Developer 的情况下独立检查并给出 blocked 结论；可实现计划完成审计仍需要 Developer。
+
+接受补丁后自动执行保持兼容。前置条件恢复后可调用 `execute_tests({"test_ids":["TEST_ID"]})` 只重跑指定测试，省略 `test_ids` 则重跑全部已接受测试，不消耗新 Developer 调用。空列表、重复或未知 ID 在执行前拒绝。实际新一轮会清除当前 Validator 和 verdict；选中轮次仅含选中测试，必须重新独立验证，历史记录保留。
+
+Developer 的每个测试可包含 `baseline` argv 数组，仅检查自身依赖。非空的受信任项目全局 `baseline` 优先，失败阻塞整批；否则使用测试自己的 baseline，未提供或为 null 时退回 Explorer baseline。显式 `[]` 表示不运行 baseline，不能作为健康基线支持确认。每条基线有独立 ID，作用于单个测试的记录包含 `for_test_id`。其失败跳过该目标，继续其他独立目标；补丁恢复失败则停止整轮并保留恢复日志。基线撤回补丁的保护机制保持有效。
+
+SSH 探测仅用于只读容器清单，例如 `inspect_environment({"probe":{"kind":"ssh_inventory","host":"inventory.example.invalid","user":"audit","identity_file":"/private/audit_key"}})`。使用已经验证的 `known_hosts`；SSH 禁用用户配置、转发与本地命令，默认批处理密钥认证。密码认证改为传入 `password_env` 的变量名，不能与 `identity_file` 同时使用；密码通过临时 askpass 环境传递并从已保存的输出中脱敏。通用文档、提示词和测试不保存真实主机或凭据。远端主机不是 Docker 部署目标；环境后端仍为本机 Docker Compose。
+
+每次探测共享最多 60 秒预算（同时受本轮剩余时间与 Docker 超时约束）。工具版本探测每次接受 1–16 个名称。每个进程的 stdout/stderr 分别在内存捕获和落盘时限制为 65,536 字节，加截断标记；SSH 密码脱敏在持久化前完成。`result.success` 表示命令健康情况，外层 action `status: completed` 仅表示探测操作已记录；预算不足时 `budget_exhausted` 保留已有证据。Compose 启动链和 readiness 共享操作期限；各命令按整秒超时，允许小于一秒的取整偏差。日志收集和补丁恢复保留其证据/恢复职责。
+
+阶段调用预算与环境操作预算分别使用 `loop.max_stage_calls` 上限；环境操作预算统计 `environment_actions` 加 `execution_attempts`，自动执行也消耗一次准备操作和一次执行尝试。`status.allowed_stages` 只列当前可调度角色，`stages` 列全部角色，`stage_availability` 说明具体门槛，`recovery` 给出可用动作。遭拒调度记在 `dispatch_rejections`，不计作已启动 worker；先修复前置条件或让上游修订计划，再重试。
 
 ## 生产代码保护和证据
 
@@ -164,6 +209,8 @@ Rust 混合源码文件支持语法树检查：仅可修改顶层 `#[cfg(test)] 
 
 ## 报告、复现和清理
 
+报告按候选列出计划的设计/执行阻塞原因、已生成测试及当前轮次实际执行证据，同时保留环境动作、执行轮次和遭拒调度；这些记录与已启动 worker 次数分开。旧运行缺少新字段时按空历史读取。
+
 默认运行目录为 `~/.aaqe/runs/<run-id>/`：
 
 ```text
@@ -176,8 +223,10 @@ stages/<stage>/attempts/0002/  # 第二次及后续独立调用，含 result 和
 artifacts/              # 当前有效产物；accepted.json 留在各 attempt 中
 tests.diff
 patch-check.json
-environment/            # Compose 快照、所有权、日志
-executions/<attempt>/   # 原始 XML、stdout/stderr、执行记录
+environment/            # Compose 定义/快照、所有权、readiness 日志
+environment/probes/     # 有界探测的 process 与 probe.json
+executions/<test-id>/<attempt>/ # 原始 XML、stdout/stderr、执行记录
+executions/rounds/<id>/  # 显式重跑的轮次 execution.json
 execution.json
 report.md
 report.json
@@ -212,4 +261,4 @@ cargo build --locked --release
 cargo test --locked --test workflow real_docker_workflow_reproduction_and_owned_cleanup -- --ignored --nocapture
 ```
 
-这项测试验证真实容器、补丁、JUnit、保留、复现和清理；模型输出是确定性测试夹具，不代表真实 Codex 已审计某个业务产品。测试创建的临时环境会在验证后显式清理。真实产品的 AI 审计还需在对应仓库配置环境后运行。
+这项测试分别验证现有文件 Compose 和提前 inline Compose 两种流程，包括真实容器、readiness、只读源码/可写结果挂载、补丁、基线、选中重跑、JUnit、保留、复现和清理；模型输出是确定性测试夹具，不代表真实 Codex 已审计某个业务产品。测试创建的临时环境会在验证后显式清理。真实产品的 AI 审计还需在对应仓库配置环境后运行。

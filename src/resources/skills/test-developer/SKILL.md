@@ -10,11 +10,12 @@ Validated test plans, candidate IDs, repository test style, patch policy and exe
 # Steps
 
 1. Inspect adjacent tests and reuse existing project fixtures and framework conventions.
-2. Implement all unblocked plans without changing production code or weakening existing assertions.
+2. Implement all plans whose blocked_reason is null/empty without changing production code or weakening existing assertions. execution_blocked_reason describes runtime prerequisites and does not prevent implementation. Use supplied environment, environment_ready and recorded environment_actions instead of assuming host capabilities describe the runner.
 3. Add independent tests/fixtures under allowed test paths. Existing Rust inline `#[cfg(test)] mod` bodies may change; all other production syntax must remain identical. Unsupported mixed source files require independent tests.
 4. Return one unified diff against the base worktree. No deletion, rename, symbolic link, binary or file-mode changes. Explicit test-only infrastructure paths may be used when allowed by project configuration.
 5. For each test, return an argv command executed in the persistent Docker runner, a simple XML report filename, and exact JUnit case names (or classname::name identities). Write reports to `{result_dir}/REPORT.xml`; the controller substitutes a new directory per attempt. Enable framework-native JUnit output. Coverage output or command exit codes alone are insufficient.
-6. Return reproduction_commands as argv arrays for necessary fixture preparation before reruns. Keep test IDs and candidate IDs from the plans.
+6. Optionally return baseline argv arrays for each test's own prerequisites. Missing/null per-test baseline uses Explorer baseline; explicit [] runs no baseline and cannot establish healthy evidence. Nonempty trusted project baseline overrides per-test choices and blocks the whole batch on failure. Scoped baseline failures skip their target while independent targets may continue. Keep setup commands deterministic and independent from generated tests because baseline runs temporarily withdraw the accepted patch.
+7. Return reproduction_commands as argv arrays for necessary fixture preparation before reruns. Keep test IDs and candidate IDs from the plans.
 
 # Outputs
 

@@ -1,5 +1,40 @@
 # Validation
 
+## Environment preparation and recoverable scheduling — 2026-11-26
+
+The harness supports recorded environment probes, inline Compose and runner readiness,
+early preparation before test generation, selected execution rounds, scoped baselines
+and recovery-aware dispatch. Reports distinguish each candidate's design and runtime
+blockers, generated tests, current execution and historical attempts. Rejected
+dispatches are separate from launched workers. See README for API examples and exact
+limits; the environment backend remains local Docker Compose.
+
+Local validation used Linux, Rust 1.96.0 and 1.88.0, Docker Engine 29.6.1,
+Compose v5.3.0, tmux 3.4 and Python 3.12.3. Each complete ordinary suite passed
+**94 tests, zero failures, with one opt-in Docker test ignored**. These counts
+include two new report regressions; four isolated child-process checks print nested
+results and are not additional top-level tests.
+
+The opt-in real Docker workflow passed separately: one test runs both the existing
+file Compose scenario and an inline Compose scenario prepared before Explorer and
+Developer. It checks real Docker inventory, readiness in the persistent runner,
+read-only source mounts (write rejected with EROFS), writable result mounts,
+healthy baseline and a known failing target assertion with complete JUnit evidence,
+a Developer retry, selected execution without a new Developer call, reproduction,
+and explicit owned Docker/tmux cleanup including repeated cleanup. Both scenarios
+use the deterministic model boundary; they do not establish actual model reasoning
+or a business product audit. The inline scenario has no Compose file in the product
+worktree, and the generated Compose and readiness evidence stay in the run directory.
+
+Formatting, strict Clippy and Release builds passed on both Rust 1.96.0 and 1.88.0;
+Cargo package verification passed with the commands in `.github/workflows/tests.yml`.
+The Rust 1.88.0 Clippy check required replacing an unnecessary owned string lookup
+with an equivalent borrowed lookup; the affected selected-execution regression passed. Cargo package emits
+the existing missing-license metadata warning. These are local results; this change
+has not established a new remote CI result. SSH/password behavior uses isolated
+regressions; no live remote host or credentials were used. Prompt/Skill instructions
+received static inspection and fixture integration, not a new actual-model audit.
+
 ## TUI exit polling CI repair — 2026-11-26
 
 GitHub Actions run [45730201256](https://github.com/qevolg/ai-agent-qe/actions/runs/45730201256)
