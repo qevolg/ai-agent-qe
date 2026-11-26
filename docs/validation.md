@@ -35,6 +35,14 @@ has not established a new remote CI result. SSH/password behavior uses isolated
 regressions; no live remote host or credentials were used. Prompt/Skill instructions
 received static inspection and fixture integration, not a new actual-model audit.
 
+Independent task reviews verified repairs for tool-specific SSH/Go version arguments,
+bounded probe output capture, and stopping execution when baseline patch restoration
+requires recovery. The final independent whole-branch review found no Critical or
+Important issue and assessed the change as ready to merge. Its sole Minor finding
+was the README raw-evidence path: corrected to `executions/<attempt>/`, matching the
+runtime's UUID directory directly under `executions`. This final documentation-only
+correction passed `git diff --check`; no additional runtime tests were needed.
+
 ## TUI exit polling CI repair — 2026-11-26
 
 GitHub Actions run [45730201256](https://github.com/qevolg/ai-agent-qe/actions/runs/45730201256)

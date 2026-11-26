@@ -225,7 +225,7 @@ tests.diff
 patch-check.json
 environment/            # Compose 定义/快照、所有权、readiness 日志
 environment/probes/     # 有界探测的 process 与 probe.json
-executions/<test-id>/<attempt>/ # 原始 XML、stdout/stderr、执行记录
+executions/<attempt>/   # 原始 XML、stdout/stderr、执行记录
 executions/rounds/<id>/  # 显式重跑的轮次 execution.json
 execution.json
 report.md

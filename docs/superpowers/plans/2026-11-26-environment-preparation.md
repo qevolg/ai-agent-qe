@@ -60,4 +60,4 @@
 - [x] Update roles/skills to distinguish design from execution blockers, use real environment probes, and retry via changed prerequisites rather than identical dispatches.
 - [x] Document inline Compose, readiness, selective reruns, per-test baselines, inventory authentication and limits.
 - [x] Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`; run the real Docker smoke test if the daemon is available.
-- [ ] Obtain an independent review, address material findings, and record verification and remaining limits.
+- [x] Obtain an independent review, address material findings, and record verification and remaining limits.
