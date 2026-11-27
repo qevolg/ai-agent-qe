@@ -242,7 +242,7 @@ impl<'a> AuditHarness<'a> {
         self.state["stages"].as_array_mut().unwrap().push(json!({"number":index+1,"name":stage,"attempt":attempt,"directory":directory,"instruction":instruction,"status":"running","started_at":now()}));
         self.save()?;
         (self.progress)(&format!("Dispatch {stage}, attempt {attempt}"));
-        let inputs = json!({"stage":stage,"attempt":attempt,"instruction":instruction,"prompt":self.state["prompt"],"base_commit":self.state["workspace"]["commit"],"project_config":self.config,"artifacts":self.artifacts,"execution":self.execution,"previous_attempts":self.state["stages"],"environment":self.state["environment"],"environment_ready":self.state["environment_ready"],"environment_actions":self.state["environment_actions"],"artifact_directory":self.directory});
+        let inputs = json!({"stage":stage,"attempt":attempt,"instruction":instruction,"prompt":self.state["prompt"],"base_commit":self.state["workspace"]["commit"],"project_config":self.config,"artifacts":self.artifacts,"execution":self.execution,"previous_attempts":self.state["stages"],"environment":self.state["environment"],"environment_setup":self.state["environment_setup"],"environment_ready":self.state["environment_ready"],"environment_actions":self.state["environment_actions"],"artifact_directory":self.directory});
         // The harness also saves boundary inputs/results for non-Codex test agents.
         write_json(&directory.join("input.json"), &inputs)?;
         let mut outcome = self.accept(stage, index, &directory, &inputs);

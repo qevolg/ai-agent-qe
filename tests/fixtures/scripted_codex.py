@@ -48,8 +48,11 @@ def coordinate(arguments, directory):
         assert not inspected["isError"], inspected
         assert inspected["structuredContent"]["result"]["success"], inspected
         readiness = """from pathlib import Path
+from aaqe_fixture_dependency import VALUE
+assert VALUE == 17
 import errno
-assert not Path('/workspace/tests/test_regression.py').exists()
+if not Path('/aaqe-results/early-ready').exists():
+    assert not Path('/workspace/tests/test_regression.py').exists()
 try:
     Path('/workspace/readiness-must-not-write').write_text('forbidden')
 except OSError as error:
@@ -64,6 +67,29 @@ Path('/aaqe-results/early-ready').write_text('ready before Explorer and Develope
             "external_containers":[], "readiness_timeout":90,
             "readiness":[["python", "-c", readiness]],
         })
+        assert prepared["isError"], prepared
+        assert prepared["structuredContent"]["status"] == "failed", prepared
+        inspected = tool("inspect_environment", probe={"kind":"tools", "tools":["python"]})
+        assert inspected["structuredContent"]["result"]["target"] == "runner", inspected
+        assert inspected["structuredContent"]["result"]["success"], inspected
+        # Build a small offline wheel inside the runner, then use actual pip to
+        # install it. No host package, network mirror or build backend is needed.
+        wheel = "/aaqe-results/aaqe_fixture_dependency-1.0-py3-none-any.whl"
+        package = """from zipfile import ZipFile
+files = {
+ 'aaqe_fixture_dependency/__init__.py': 'VALUE = 17\\n',
+ 'aaqe_fixture_dependency-1.0.dist-info/METADATA': 'Metadata-Version: 2.1\\nName: aaqe-fixture-dependency\\nVersion: 1.0\\n',
+ 'aaqe_fixture_dependency-1.0.dist-info/WHEEL': 'Wheel-Version: 1.0\\nGenerator: AAQE-fixture\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n',
+}
+files['aaqe_fixture_dependency-1.0.dist-info/RECORD'] = ''.join(name + ',,\\n' for name in files) + 'aaqe_fixture_dependency-1.0.dist-info/RECORD,,\\n'
+with ZipFile('/aaqe-results/aaqe_fixture_dependency-1.0-py3-none-any.whl', 'w') as archive:
+    for name, contents in files.items():
+        archive.writestr(name, contents)
+"""
+        prepared = tool("prepare_environment", setup=[
+            ["python", "-c", package],
+            ["python", "-m", "pip", "install", "--no-index", "--disable-pip-version-check", wheel],
+        ])
         assert not prepared["isError"], prepared
         assert prepared["structuredContent"]["result"]["environment_ready"], prepared
     stages = ["code-explorer", "bug-hunter", "test-designer", "test-developer", "test-validator"]
@@ -168,6 +194,8 @@ def main():
     }
     if stage == "test-developer":
         source = "import unittest\nfrom app import bounded_value\n\nclass NegativeTest(unittest.TestCase):\n    def test_negative(self):\n        self.assertEqual(bounded_value(-1), 0)\n"
+        if "--early-inline" in arguments:
+            source = "from aaqe_fixture_dependency import VALUE\nassert VALUE == 17\n" + source
         if inputs.get("attempt", 1) > 1:
             assert inputs["execution"]["tests"], "Retry lost prior execution feedback"
             source = "# Fixture reviewed against actual execution feedback\n" + source

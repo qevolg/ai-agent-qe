@@ -46,12 +46,18 @@ impl AuditAgent for Codex {
 }
 pub trait TestRuntime {
     fn start(&self) -> Result<()>;
+    fn inspect(&self, _probe: &Value, _timeout: u64) -> Result<Value> {
+        anyhow::bail!("This runtime does not support runner probes")
+    }
     fn execute_test(&self, command: &[String], test_id: &str, timeout: u64) -> Result<Value>;
     fn logs(&self) -> Result<()>;
 }
 impl TestRuntime for ComposeEnvironment {
     fn start(&self) -> Result<()> {
         ComposeEnvironment::start(self)
+    }
+    fn inspect(&self, probe: &Value, timeout: u64) -> Result<Value> {
+        ComposeEnvironment::inspect(self, probe, timeout)
     }
     fn execute_test(&self, command: &[String], test_id: &str, timeout: u64) -> Result<Value> {
         ComposeEnvironment::execute_test(self, command, test_id, timeout)
@@ -250,6 +256,7 @@ pub fn reproduce(store: &Store, state: &mut Value, case_id: Option<&str>) -> Res
         state["environment"].clone(),
         config.docker_timeout,
     );
+    runtime.start()?;
     let mut records = Vec::new();
     for test in tests {
         for (index, command) in test["reproduction_commands"]

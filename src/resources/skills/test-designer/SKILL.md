@@ -14,8 +14,9 @@ Candidate list, analysis, behavioral references, existing fixtures and available
 3. Specify initial state, real service requirements, actions, observable outcome and a target assertion.
 4. Explain how the test distinguishes the proposed defect from setup, build, timeout and cleanup failures.
 5. Specify reproduction and data reset/preparation steps. Preserve a failure scene where needed.
-6. Set blocked_reason only when a reliable oracle or implementable design is missing. Missing host tools, an unprepared runner or unavailable service belong in optional execution_blocked_reason when the test can still be implemented. Use the harness-provided environment, environment_ready and recorded environment_actions; a missing host tool does not imply the tool is absent from the runner.
-7. Split independent unit, integration and E2E experiments into separate test IDs so a runtime prerequisite does not block unrelated tests. Describe concrete prerequisites and how readiness can be checked. Do not change intended behavior to force a test.
+6. Set blocked_reason only when a reliable oracle or implementable design is missing. An unprepared runner, a missing runner dependency or an unavailable service belongs in optional execution_blocked_reason when the test can still be implemented. Use harness-provided environment, environment_setup, environment_ready and recorded environment_actions. Host build/test tools are not execution prerequisites.
+7. Missing host build/test tools are irrelevant: compilation, dependency installation, fixtures and tests execute in Docker. For missing runner dependencies, specify required packages/versions and readiness checks so the coordinator can automatically install them with prepare_environment setup, without asking the operator to install tools. Until runner evidence shows a real unresolved prerequisite, do not claim execution is blocked merely because a host tool is absent.
+8. Split independent unit, integration and E2E experiments into separate test IDs so a runtime prerequisite does not block unrelated tests. Describe concrete prerequisites and how readiness can be checked. Do not change intended behavior to force a test.
 
 # Outputs
 

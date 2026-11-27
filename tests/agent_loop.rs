@@ -485,7 +485,7 @@ impl AuditAgent for PreparationAgent {
                 "failed"
             );
             assert_eq!(
-                h.inspect_environment(&json!({"kind":"tools","tools":["git"]}))?["status"],
+                h.inspect_environment(&json!({"kind":"tools","target":"host","tools":["git"]}))?["status"],
                 "completed"
             );
         }
@@ -526,6 +526,27 @@ impl AuditAgent for PreparationAgent {
             h.run_stage("test-validator", "validate first round")?;
             assert_eq!(h.status()["verdicts"][0]["status"], "confirmed");
             let old = h.status()["execution"]["tests"][0]["directory"].clone();
+            let current = h.status();
+            assert_eq!(
+                h.prepare_environment_with_setup(None, Some(vec![]))?["status"],
+                "failed"
+            );
+            assert_eq!(h.status()["execution"], current["execution"]);
+            assert_eq!(h.status()["verdicts"], current["verdicts"]);
+            assert_eq!(
+                h.prepare_environment_with_setup(
+                    None,
+                    Some(vec![vec!["install-missing-dependency".into()]])
+                )?["status"],
+                "completed"
+            );
+            assert_eq!(h.status()["execution"]["tests"], json!([]));
+            assert_eq!(h.status()["verdicts"], json!([]));
+            assert!(h.status()["artifacts"]["test-validator"].is_null());
+            assert_eq!(
+                h.status()["state"]["environment_setup"],
+                json!([["install-missing-dependency"]])
+            );
             assert_eq!(
                 h.execute_tests(Some(vec!["test".into()]))?["status"],
                 "completed"

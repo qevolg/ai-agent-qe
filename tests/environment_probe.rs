@@ -13,6 +13,21 @@ fn probe_contract_accepts_an_explicit_runner_or_host_target() {
 }
 
 #[test]
+fn preparation_contract_accepts_nonempty_dependency_repair_commands() {
+    let tools = aaqe::mcp::tools();
+    let tool = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "prepare_environment")
+        .unwrap();
+    let validator = jsonschema::validator_for(&tool["inputSchema"]).unwrap();
+    assert!(validator.is_valid(&json!({"setup":[["python","-m","pip","install","example==1.0"]]})));
+    assert!(!validator.is_valid(&json!({"setup":[]})));
+    assert!(!validator.is_valid(&json!({"setup":[[]]})));
+}
+
+#[test]
 fn runner_probe_executes_in_compose_and_never_falls_back_to_host_tools() {
     if std::env::var_os("AAQE_RUNNER_PROBE_CHILD").is_none() {
         let temp = tempfile::tempdir().unwrap();

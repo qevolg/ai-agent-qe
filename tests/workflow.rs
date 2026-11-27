@@ -491,13 +491,19 @@ fn real_docker_scenario(early_inline: bool) {
             .collect();
         assert_eq!(
             readiness.len(),
-            1,
+            2,
             "Ready reuse reran readiness unexpectedly"
         );
-        assert_eq!(
-            read_json(&readiness[0].join("process.json")).unwrap()["returncode"],
-            0
-        );
+        let codes: Vec<_> = readiness
+            .iter()
+            .map(|path| {
+                read_json(&path.join("process.json")).unwrap()["returncode"]
+                    .as_i64()
+                    .unwrap()
+            })
+            .collect();
+        assert!(codes.contains(&0) && codes.contains(&1), "{codes:?}");
+        assert!(dir.join("environment/dependency-setup.json").is_file());
         let explorer = read_json(&dir.join("stages/code-explorer/input.json")).unwrap();
         assert_eq!(explorer["environment_ready"], true);
         assert_eq!(
@@ -535,6 +541,26 @@ fn real_docker_scenario(early_inline: bool) {
             .status
             .success()
     );
+    if early_inline {
+        let runtime = ComposeEnvironment::new(
+            Path::new(state["workspace"]["path"].as_str().unwrap()),
+            &dir,
+            &id,
+            state["environment"].clone(),
+            120,
+        );
+        let argv = runtime.arguments(true).unwrap();
+        let removed = Command::new(&argv[0])
+            .args(&argv[1..])
+            .args(["rm", "--stop", "--force", "runner"])
+            .output()
+            .unwrap();
+        assert!(
+            removed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&removed.stderr)
+        );
+    }
     let replay = binary()
         .args([
             "--state-dir",

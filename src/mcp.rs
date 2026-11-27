@@ -38,14 +38,14 @@ pub fn tools() -> Value {
         ),
         tool(
             "inspect_environment",
-            "Inspect bounded read-only environment capabilities and retain evidence.",
+            "Inspect bounded capabilities with evidence. Tools/endpoints default to the runner; prepare it first. Docker and SSH inventory execute on the host.",
             json!({"probe":crate::environment_probe::schema()}),
             &["probe"]
         ),
         tool(
             "prepare_environment",
-            "Prepare or retry this audit's immutable runner before generating tests.",
-            json!({"environment":{"type":["object","null"]}}),
+            "Prepare/retry the runner. Supply setup argv to install missing dependencies as container user 0 without human approval; repairs are saved and replayed before readiness. This invalidates current execution/validation.",
+            json!({"environment":{"type":["object","null"]},"setup":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"string","minLength":1,"maxLength":8192}}},"replace_setup":{"type":"boolean","description":"Replace an incorrect installation recipe with this complete setup list, including prerequisites needed on recreation. Default appends unique commands."}}),
             &[]
         ),
         tool(
@@ -84,11 +84,17 @@ fn call(harness: &mut AuditHarness<'_>, params: &Value) -> Result<Value> {
             arguments["instruction"].as_str().unwrap(),
         ),
         "inspect_environment" => harness.inspect_environment(&arguments["probe"]),
-        "prepare_environment" => harness.prepare_environment(
+        "prepare_environment" => harness.prepare_environment_with_setup_mode(
             arguments
                 .get("environment")
                 .filter(|v| !v.is_null())
                 .cloned(),
+            arguments
+                .get("setup")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()?,
+            arguments["replace_setup"].as_bool().unwrap_or(false),
         ),
         "execute_tests" => harness.execute_tests(
             arguments

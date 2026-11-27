@@ -83,6 +83,10 @@ impl ComposeEnvironment {
     }
 
     pub fn record_setup(&self, commands: &[Vec<String>]) -> Result<()> {
+        self.record_setup_with_replace(commands, false)
+    }
+
+    pub fn record_setup_with_replace(&self, commands: &[Vec<String>], replace: bool) -> Result<()> {
         ensure!(
             !commands.is_empty(),
             "Dependency repair requires nonempty setup commands"
@@ -92,7 +96,11 @@ impl ComposeEnvironment {
             !self.run_dir.starts_with(&self.workspace),
             "Environment artifacts must be outside the worktree"
         );
-        let mut saved = self.saved_setup()?;
+        let mut saved = if replace {
+            vec![]
+        } else {
+            self.setup_commands()?
+        };
         for command in commands {
             if !saved.contains(command) {
                 saved.push(command.clone());
@@ -108,6 +116,17 @@ impl ComposeEnvironment {
             command_list(&read_json(&path)?, "setup")
         } else {
             Ok(vec![])
+        }
+    }
+
+    fn setup_commands(&self) -> Result<Vec<Vec<String>>> {
+        if self.env_dir.join("dependency-setup.json").exists() {
+            self.saved_setup()
+        } else {
+            self.spec
+                .get("setup")
+                .map(|value| command_list(value, "setup"))
+                .unwrap_or_else(|| Ok(vec![]))
         }
     }
 
@@ -214,17 +233,18 @@ impl ComposeEnvironment {
         };
         ensure!(timeout > 0, "Environment operation time budget exhausted");
         let result = (self.execute)(argv, timeout.min(self.timeout));
-        save_result(
-            &result,
-            &self
-                .env_dir
-                .join(label)
-                .join(Uuid::new_v4().simple().to_string()),
-        )?;
+        let evidence = self
+            .env_dir
+            .join(label)
+            .join(Uuid::new_v4().simple().to_string());
+        save_result(&result, &evidence)?;
         ensure!(
             result.returncode == 0,
-            "Docker {label} failed (exit {}); environment retained",
-            result.returncode
+            "Docker {label} failed (exit {}); environment retained; evidence: {}\nstdout: {}\nstderr: {}",
+            result.returncode,
+            evidence.display(),
+            result.stdout.chars().take(4096).collect::<String>(),
+            result.stderr.chars().take(4096).collect::<String>()
         );
         Ok(result)
     }
@@ -235,15 +255,7 @@ impl ComposeEnvironment {
             "Environment artifacts must be outside the worktree"
         );
         self.validate_spec()?;
-        let mut setup = match self.spec.get("setup") {
-            Some(value) => command_list(value, "setup")?,
-            None => vec![],
-        };
-        for command in self.saved_setup()? {
-            if !setup.contains(&command) {
-                setup.push(command);
-            }
-        }
+        let setup = self.setup_commands()?;
         fs::create_dir_all(&self.env_dir)?;
         fs::create_dir_all(&self.results)?;
         let runner = self.spec["runner_service"]

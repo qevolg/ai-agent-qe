@@ -1,4 +1,5 @@
 use super::*;
+use crate::environment::ComposeEnvironment;
 use std::collections::HashSet;
 
 fn merge(target: &mut Value, source: &Value) -> Result<()> {
@@ -119,6 +120,22 @@ impl AuditHarness<'_> {
     pub fn inspect_environment(&mut self, probe: &Value) -> Result<Value> {
         let result = (|| {
             let remaining = self.operation_gate()?;
+            if matches!(probe["kind"].as_str(), Some("tools" | "endpoint"))
+                && probe["target"] != "host"
+            {
+                ensure!(
+                    self.state["environment"].is_object(),
+                    "Prepare a runner before probing test dependencies"
+                );
+                let runtime = (self.factory)(
+                    &self.root()?,
+                    &self.directory,
+                    self.state["id"].as_str().unwrap(),
+                    self.state["environment"].clone(),
+                    self.config.docker_timeout.min(remaining),
+                );
+                return runtime.inspect(probe, self.config.docker_timeout.min(remaining));
+            }
             crate::environment_probe::inspect(
                 &self.root()?,
                 &self.directory.join("environment/probes"),
@@ -129,8 +146,28 @@ impl AuditHarness<'_> {
         self.action("inspect_environment", result)
     }
     pub fn prepare_environment(&mut self, environment: Option<Value>) -> Result<Value> {
+        self.prepare_environment_with_setup(environment, None)
+    }
+    pub fn prepare_environment_with_setup(
+        &mut self,
+        environment: Option<Value>,
+        setup: Option<Vec<Vec<String>>>,
+    ) -> Result<Value> {
+        self.prepare_environment_with_setup_mode(environment, setup, false)
+    }
+
+    pub fn prepare_environment_with_setup_mode(
+        &mut self,
+        environment: Option<Value>,
+        setup: Option<Vec<Vec<String>>>,
+        replace_setup: bool,
+    ) -> Result<Value> {
         let result = (|| {
             let remaining = self.operation_gate()?;
+            ensure!(
+                !replace_setup || setup.is_some(),
+                "replace_setup requires setup commands"
+            );
             let locked = self.state["environment_started"] == true
                 || self.directory.join("environment/ownership.json").exists();
             let mut spec = if self.state["environment"].is_object() {
@@ -155,9 +192,24 @@ impl AuditHarness<'_> {
                 !locked || self.state["environment"] == spec,
                 "Environment changed after startup; retain this run and start a new audit for the new environment"
             );
+            if let Some(commands) = setup {
+                self.gate()?.verify_worktree()?;
+                let recipes = ComposeEnvironment::new(
+                    &self.root()?,
+                    &self.directory,
+                    self.state["id"].as_str().unwrap(),
+                    spec.clone(),
+                    self.config.docker_timeout.min(remaining),
+                );
+                recipes.record_setup_with_replace(&commands, replace_setup)?;
+                self.state["environment_setup"] = json!(recipes.saved_setup()?);
+                self.state["environment_ready"] = json!(false);
+                self.invalidate(3)?;
+            }
             self.state["environment"] = spec.clone();
             self.save()?;
             if self.state["environment_ready"] != true {
+                self.gate()?.verify_worktree()?;
                 let runtime = (self.factory)(
                     &self.root()?,
                     &self.directory,
@@ -168,10 +220,13 @@ impl AuditHarness<'_> {
                 self.state["environment_retained"] = json!(true);
                 self.save()?;
                 runtime.start()?;
+                self.gate()?.verify_worktree()?;
                 self.state["environment_started"] = json!(true);
                 self.state["environment_ready"] = json!(true);
             }
-            Ok(json!({"environment":spec,"environment_ready":true}))
+            Ok(
+                json!({"environment":spec,"environment_setup":self.state["environment_setup"],"environment_ready":true,"evidence_directory":self.directory.join("environment")}),
+            )
         })();
         self.action("prepare_environment", result)
     }

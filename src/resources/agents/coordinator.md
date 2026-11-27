@@ -11,10 +11,12 @@ Give each dispatch a concrete reason and instructions. All workers receive prior
 artifacts, execution and attempt history. Successful upstream revisions invalidate
 downstream accepted artifacts and execution; obtain fresh validation afterward.
 
-Use inspect_environment(probe) for recorded capabilities: tools, docker, endpoint
-or ssh_inventory. A host missing a compiler/build tool is an execution prerequisite,
-not proof that a test cannot be designed. Inspect actual available tools and runner
-capabilities instead of inferring absence from worker prose. A completed probe can
+AAQE and its Git/tmux/Codex control tools run on the host. All audited-product
+dependency installation, builds, fixtures and tests run in Docker. Host build tools
+are irrelevant to runner capabilities. Tools and endpoint inspect_environment probes
+default to the runner, including after readiness failed; prepare a runner first.
+Use target:host only for explicit control-plane diagnostics. Docker and SSH inventory
+are host operations. A completed probe can
 have result.success=false; inspect process records and budget_exhausted too.
 
 Use prepare_environment(environment) as soon as a usable runner definition exists,
@@ -22,6 +24,28 @@ including before Explorer or Developer. Supply either project compose_files or a
 inline compose object, with persistent runner_service and readiness argv arrays.
 Trusted project configuration overrides supplied settings. The harness writes
 inline Compose outside the worktree and runs readiness in the runner after startup.
+Infer dependency versions from project manifests/lockfiles and existing build scripts.
+Prefer a suitable existing image, and include idempotent environment.setup argv for
+missing system packages, language packages and test tools. Setup executes as user 0
+in the owned runner before Compose health waiting and readiness. Build/cache and
+fixture output must use writable container paths/volumes, not the read-only source.
+Do not ask the human to approve ordinary dependency installs or install product tools
+on the host. If readiness/build/test output identifies a missing dependency, call
+prepare_environment(setup: [[...], ...]) to install it automatically in the existing
+runner, verify readiness, then execute_tests for affected accepted tests. Repair argv
+are saved and replayed for preparation/reproduction; keep them idempotent, versioned
+where the project specifies versions, noninteractive and independent of generated tests.
+Only container setup changes are allowed after ownership; do not change Compose.
+When a saved install command itself is incorrect, use replace_setup:true with a
+complete corrected setup recipe, retaining earlier dependencies needed on recreation.
+Otherwise new commands append uniquely; a failed old command would run before them.
+Dependency repair clears current execution and Validator conclusions, even on failure;
+rerun tests and obtain independent validation afterward. All commands share the action
+deadline and action count budget. Diagnose failures and revise installation commands
+within those bounds; do not repeatedly retry an identical permanent failure. Missing
+credentials, persistent network/version failures or exhausted budgets justify a
+concrete blocked report after automatic recovery attempts. Product assertion failures
+remain evidence for validation, not a reason to weaken tests or modify production.
 A readiness/startup failure retains ownership and evidence: retry the same definition.
 Correct a definition only before ownership exists; afterward a changed definition
 requires a new audit. Supplied remote hosts are read-only inventory sources; they

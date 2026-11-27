@@ -45,12 +45,18 @@ fn dependency_setup_runs_as_root_before_readiness_and_retries_without_replacing_
             } else {
                 String::new()
             },
-            stderr: String::new(),
+            stderr: if code != 0 {
+                "package repository unavailable".into()
+            } else {
+                String::new()
+            },
             elapsed: 0.0,
             timed_out: false,
         }
     }));
-    assert!(runtime.start().unwrap_err().to_string().contains("setup"));
+    let failure = runtime.start().unwrap_err().to_string();
+    assert!(failure.contains("setup"));
+    assert!(failure.contains("package repository unavailable"));
     assert!(
         !calls
             .lock()
@@ -132,6 +138,30 @@ fn repair_recipes_are_deduplicated_validated_and_loaded_by_a_new_runtime() {
     }
     let restored = ComposeEnvironment::new(workspace.path(), run.path(), "repair", json!({}), 5);
     assert_eq!(restored.saved_setup().unwrap(), install);
+}
+
+#[test]
+fn incorrect_installation_recipe_can_be_replaced_without_changing_compose() {
+    let workspace = tempfile::tempdir().unwrap();
+    let run = tempfile::tempdir().unwrap();
+    let runtime = ComposeEnvironment::new(
+        workspace.path(),
+        run.path(),
+        "correction",
+        json!({"setup":[["install-wrong-version"]]}),
+        5,
+    );
+    runtime
+        .record_setup_with_replace(&[vec!["install-correct-version".into()]], true)
+        .unwrap();
+    assert_eq!(
+        runtime.saved_setup().unwrap(),
+        vec![vec!["install-correct-version".to_string()]]
+    );
+    runtime
+        .record_setup(&[vec!["install-another-package".into()]])
+        .unwrap();
+    assert_eq!(runtime.saved_setup().unwrap().len(), 2);
 }
 
 #[test]

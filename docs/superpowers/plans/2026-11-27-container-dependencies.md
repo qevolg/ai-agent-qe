@@ -31,10 +31,10 @@
 
 **Interfaces:** `ComposeEnvironment::record_setup(&[Vec<String>]) -> Result<()>`; initial `environment.setup` and saved extra recipes execute before readiness. `ComposeEnvironment::inspect(&Value, u64) -> Result<Value>` records runner probes using existing bounded capture.
 
-- [ ] Add failing regressions for initial/repair setup ordering, failure retry, snapshot reuse, invalid commands and runner probe routing.
-- [ ] Run the focused tests and observe the expected missing behavior.
-- [ ] Implement saved setup, validation and runner probe wrapping; extend schemas.
-- [ ] Run `cargo test --locked --test environment_runtime --test environment_probe` and commit the deliverable.
+- [x] Add failing regressions for initial/repair setup ordering, failure retry, snapshot reuse, invalid commands and runner probe routing.
+- [x] Run the focused tests and observe the expected missing behavior.
+- [x] Implement saved setup, validation and runner probe wrapping; extend schemas.
+- [x] Run `cargo test --locked --test environment_runtime --test environment_probe` and commit the deliverable.
 
 ### Task 2: Harness recovery, replay and instructions
 
@@ -42,9 +42,9 @@
 
 **Interfaces:** `prepare_environment_with_setup(Option<Value>, Option<Vec<Vec<String>>>)` preserves `prepare_environment(Option<Value>)`. `TestRuntime::inspect` routes tools/endpoint probes into the factory's runtime. MCP preparation accepts optional setup argv.
 
-- [ ] Add failing recovery/invalidation and replay coverage, including invalid repair preserving current evidence.
-- [ ] Implement MCP preparation, persisted recipes, readiness reset and Validator/execution invalidation; replay setup in reproduction.
-- [ ] Update coordinator and stage instructions to infer, install, verify and retry without human approval.
-- [ ] Extend real Docker coverage to install a genuinely absent package, repair after startup, probe the runner, recreate it and reproduce.
+- [x] Add failing recovery/invalidation and replay coverage, including invalid repair preserving current evidence.
+- [x] Implement MCP preparation, persisted recipes, readiness reset and Validator/execution invalidation; replay setup in reproduction.
+- [x] Update coordinator and stage instructions to infer, install, verify and retry without human approval.
+- [x] Extend real Docker coverage to install a genuinely absent package, repair after startup, probe the runner, recreate it and reproduce.
 - [ ] Run focused and full tests, formatting, strict Clippy, MSRV checks and real Docker validation; record actual results.
 - [ ] Obtain one independent whole-change review, address actionable findings, commit, fast-forward the original main checkout and push origin/main; verify the remote SHA.
