@@ -41,6 +41,26 @@ fn streamed_binary_output_stays_bounded_after_lossy_utf8_conversion() {
     );
 }
 
+#[test]
+fn failure_to_persist_a_stream_is_reported_as_failed_execution() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().unwrap();
+    symlink("/dev/full", temp.path().join("stdout.log")).unwrap();
+    let result = process::run_logged(
+        &["sh".into(), "-c".into(), "printf evidence".into()],
+        temp.path(),
+        5,
+        "",
+        temp.path(),
+    )
+    .unwrap();
+    assert_ne!(
+        result.returncode, 0,
+        "A process without persisted evidence must not appear successful"
+    );
+    assert!(result.stderr.contains("log"), "{}", result.stderr);
+}
+
 fn git(directory: &Path, arguments: &[&str]) -> String {
     gitops::git(directory, arguments).unwrap()
 }

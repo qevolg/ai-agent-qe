@@ -586,6 +586,7 @@ pub fn audit(
         progress,
     };
     harness.state["environment_retained"] = json!(false);
+    harness.state["audit_finalized"] = json!(false);
     harness.save()?;
     let outcome = (|| -> Result<()> {
         progress(&format!(
@@ -646,6 +647,7 @@ pub fn audit(
     }
     harness.state["stage"] = json!(6);
     harness.state["finished_at"] = json!(now());
+    harness.state["audit_finalized"] = json!(true);
     harness.save()?;
     generate_report(
         &harness.directory,

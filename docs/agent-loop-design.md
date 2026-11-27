@@ -67,6 +67,11 @@ post-audit operations. Reproduction/cleanup reject an active audit or a busy run
 Reproduction journals its attempt before startup and saves partial records and
 failures. Reports rebuild from the snapshot without requiring a previous report;
 resource cleanup and state persistence proceed independently of rendering.
+For current runs, `audit_finalized` remains false until outer recovery and final
+state persistence complete. Terminal model status alone does not admit reproduction
+or cleanup. The MCP lock covers finish logging, response flush and acknowledgement.
+Reproduction selects current tests from the snapshot; legacy Python runs use aliases.
+Stream I/O errors fail execution while readers continue draining the child.
 
 Independent background workers preserve separate stage contexts and attempts.
 The persistent TUI keeps the coordinator's conversation available after the audit.

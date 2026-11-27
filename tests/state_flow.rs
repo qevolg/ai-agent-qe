@@ -107,6 +107,29 @@ fn reproduction_rejects_active_audits_before_accessing_artifacts() {
     }
 }
 
+#[test]
+fn terminal_status_during_audit_finalization_rejects_reproduction_and_cleanup() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::new(temp.path());
+    let mut state = store
+        .create("audit", &Config::default(), temp.path())
+        .unwrap();
+    let id = state["id"].as_str().unwrap().to_owned();
+    state["status"] = json!("completed");
+    state["audit_finalized"] = json!(false);
+    state["environment"] = json!({});
+    store.save(&state).unwrap();
+    let error = aaqe::workflow::reproduce(&store, &mut state, None).unwrap_err();
+    assert!(format!("{error:#}").contains("finaliz"), "{error:#}");
+    let cleanup = std::process::Command::new(env!("CARGO_BIN_EXE_aaqe"))
+        .args(["--state-dir", temp.path().to_str().unwrap(), "cleanup", &id])
+        .output()
+        .unwrap();
+    assert_eq!(cleanup.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&cleanup.stdout).contains("finaliz"));
+    assert!(store.load(&id).unwrap()["tmux_cleaned_at"].is_null());
+}
+
 fn git(root: &Path, args: &[&str]) -> String {
     aaqe::gitops::git(root, args).unwrap()
 }
@@ -131,9 +154,15 @@ fn failed_reproduction_start_is_registered_without_changing_original_evidence() 
     state["workspace"] = json!({"path":root,"commit":git(&root, &["rev-parse","HEAD"])});
     let mut saved = snapshot(&state);
     saved["verdicts"] = json!([{"candidate_id":"bug","status":"confirmed"}]);
+    saved["artifacts"]["test-developer"] = json!({"tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[]}]});
     write_json(&directory.join("harness.json"), &saved).unwrap();
-    write_json(&directory.join("artifacts/test-developer.json"), &json!({"tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[]}]})).unwrap();
-    let error = aaqe::workflow::reproduce(&store, &mut state, None).unwrap_err();
+    fs::create_dir_all(directory.join("artifacts")).unwrap();
+    fs::write(
+        directory.join("artifacts/test-developer.json"),
+        "broken compatibility alias",
+    )
+    .unwrap();
+    let error = aaqe::workflow::reproduce(&store, &mut state, Some("test")).unwrap_err();
     assert!(format!("{error:#}").contains("runner"), "{error:#}");
     let loaded = store.load(&id).unwrap();
     assert_eq!(loaded["reproductions"][0]["status"], "failed");

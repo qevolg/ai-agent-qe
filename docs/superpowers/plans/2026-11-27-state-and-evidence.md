@@ -31,10 +31,10 @@
 
 **Interfaces:** `HarnessSnapshot::{load,save}`, `RunLock::acquire`, `Store::{load,save}`; existing reproduction signature retained.
 
-- [ ] Add regression tests for snapshot precedence, old post-audit metadata migration, invalid snapshots, operation contention, active/failed reproduction.
-- [ ] Run focused tests and observe the expected failures.
-- [ ] Implement snapshot validation and shared state writes, operation locks and incremental reproduction records.
-- [ ] Run focused state/workflow/MCP/agent-loop tests; commit the deliverable.
+- [x] Add regression tests for snapshot precedence, old post-audit metadata migration, invalid snapshots, operation contention, active/failed reproduction.
+- [x] Run focused tests and observe the expected failures.
+- [x] Implement snapshot validation and shared state writes, operation locks and incremental reproduction records.
+- [x] Run focused state/workflow/MCP/agent-loop tests; commit the deliverable.
 
 ## Task 2: Bounded context and logs
 
@@ -42,10 +42,10 @@
 
 **Interfaces:** `build_stage_inputs`, bounded model-facing evidence projection, `run_streamed`; complete machine-readable capture remains available.
 
-- [ ] Add regressions proving role-specific inputs retain retry feedback and that long outputs keep complete raw files but bounded summaries.
-- [ ] Run regressions and observe expected failures.
-- [ ] Implement input projection and stream/capture separation; route setup/test/log commands through streamed execution.
-- [ ] Run focused process/environment/agent-loop/MCP tests; commit.
+- [x] Add regressions proving role-specific inputs retain retry feedback and that long outputs keep complete raw files but bounded summaries.
+- [x] Run regressions and observe expected failures.
+- [x] Implement input projection and stream/capture separation; route setup/test/log commands through streamed execution.
+- [x] Run focused process/environment/agent-loop/MCP tests; commit.
 
 ## Task 3: Derived reports, docs and integration
 
@@ -53,7 +53,9 @@
 
 **Interfaces:** `refresh_report` uses snapshots for current runs and previous report for legacy runs; cleanup persists independently of rendering.
 
-- [ ] Add missing/corrupt report and cleanup regressions; observe failures.
-- [ ] Implement regeneration and independent cleanup/report outcomes; align documentation.
-- [ ] Run formatting, clippy and the complete locked test suite; run real Docker coverage if available.
-- [ ] Review the whole diff with a fresh reviewer, resolve material findings, commit and push; verify the remote SHA.
+- [x] Add missing/corrupt report and cleanup regressions; observe failures.
+- [x] Implement regeneration and independent cleanup/report outcomes; align documentation.
+- [x] Run formatting, clippy and the complete locked test suite; run real Docker coverage if available.
+- [x] Review the whole diff with a fresh reviewer, resolve material findings and complete final validation.
+
+Delivery: commit and push the validated changes to `origin/main`; report the verified remote SHA in the final delivery message.

@@ -195,6 +195,8 @@ pub fn serve(directory: &Path) -> Result<()> {
             continue;
         };
         let method = request["method"].as_str().unwrap_or("");
+        // Keep ownership through logging, response flush and finish acknowledgement.
+        let mut operation_lock = None;
         let response = match method {
             "initialize" => {
                 let requested = request["params"]["protocolVersion"].as_str().unwrap_or("");
@@ -209,7 +211,7 @@ pub fn serve(directory: &Path) -> Result<()> {
             "tools/list" => json!({"result":{"tools":tools()}}),
             "tools/call" => {
                 let result = (|| {
-                    let _lock = crate::state::RunLock::acquire(directory)?;
+                    operation_lock = Some(crate::state::RunLock::acquire(directory)?);
                     harness.reload()?;
                     call(&mut harness, &request["params"])
                 })();
@@ -250,6 +252,7 @@ pub fn serve(directory: &Path) -> Result<()> {
         {
             File::create(coordinator.join("audit-finished"))?;
         }
+        drop(operation_lock);
     }
     Ok(())
 }

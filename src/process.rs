@@ -99,6 +99,7 @@ struct PipeOutput {
     bytes: Vec<u8>,
     tail: Vec<u8>,
     truncated: bool,
+    error: Option<String>,
 }
 
 impl PipeOutput {
@@ -337,7 +338,13 @@ fn read_pipe(
         let mut buffer = [0u8; 65536];
         loop {
             let count = match pipe.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
+                Err(error) => {
+                    output
+                        .error
+                        .get_or_insert_with(|| format!("Cannot read process pipe: {error}"));
+                    break;
+                }
                 Ok(count) => count,
             };
             let retained = count.min(
@@ -356,9 +363,15 @@ fn read_pipe(
             } else {
                 output.truncated |= retained < count;
             }
-            if let Some(log) = &mut log {
-                let _ = log.write_all(&buffer[..if tail { count } else { retained }]);
-                let _ = log.flush();
+            if let Some(file) = &mut log
+                && let Err(error) = file
+                    .write_all(&buffer[..if tail { count } else { retained }])
+                    .and_then(|_| file.flush())
+            {
+                output
+                    .error
+                    .get_or_insert_with(|| format!("Cannot persist process log: {error}"));
+                log = None; // Drain the child even when evidence storage fails.
             }
         }
         let _ = sender.send(output);
@@ -477,10 +490,11 @@ fn run_inner(
     }
     let status = status.or_else(|| child.wait().ok());
     let _ = writer.join();
-    result.stdout = stdout.unwrap_or_default().text(capture.limit);
-    result
-        .stderr
-        .push_str(&stderr.unwrap_or_default().text(capture.limit));
+    let stdout = stdout.unwrap_or_default();
+    let stderr = stderr.unwrap_or_default();
+    let output_error = stdout.error.clone().or_else(|| stderr.error.clone());
+    result.stdout = stdout.text(capture.limit);
+    result.stderr.push_str(&stderr.text(capture.limit));
     result.returncode = if result.timed_out {
         124
     } else if cancelled {
@@ -500,6 +514,12 @@ fn run_inner(
             })
             .unwrap_or(127)
     };
+    if let Some(error) = output_error {
+        result.stderr.push_str(&format!("\n{error}"));
+        if !result.timed_out && !cancelled {
+            result.returncode = 127;
+        }
+    }
     result.elapsed = started.elapsed().as_secs_f64();
     result
 }

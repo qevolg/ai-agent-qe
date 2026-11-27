@@ -204,6 +204,10 @@ fn execute(cli: Cli) -> Result<i32> {
                 state["status"] != "initializing" && state["status"] != "running",
                 "Cannot clean resources while the audit is running"
             );
+            ensure!(
+                state["audit_finalized"] != false,
+                "Cannot clean resources while audit finalization is pending"
+            );
             cleanup_tmux(&directory)?;
             if state["tmux_cleaned_at"].is_null() {
                 state["tmux_cleaned_at"] = json!(now());

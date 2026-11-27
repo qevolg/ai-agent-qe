@@ -5,7 +5,7 @@ use crate::{
     evidence::parse_junit,
     patchgate::PatchGate,
     reporting::refresh_report,
-    state::{RunLock, Store, now, read_json, write_json},
+    state::{HarnessSnapshot, RunLock, Store, now, read_json, write_json},
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -227,6 +227,10 @@ pub fn reproduce(store: &Store, state: &mut Value, case_id: Option<&str>) -> Res
         "Cannot reproduce while the audit is running"
     );
     ensure!(
+        state["audit_finalized"] != false,
+        "Cannot reproduce while audit finalization is pending"
+    );
+    ensure!(
         state["environment_cleaned_at"].is_null(),
         "This run's environment has already been cleaned"
     );
@@ -235,7 +239,15 @@ pub fn reproduce(store: &Store, state: &mut Value, case_id: Option<&str>) -> Res
         "This run has no test environment"
     );
     let config: Config = serde_json::from_value(state["config"].clone())?;
-    let artifact = read_json(&directory.join("artifacts/test-developer.json"))?;
+    let artifact = if directory.join("harness.json").exists() {
+        HarnessSnapshot::load(&directory)?
+            .artifacts
+            .get("test-developer")
+            .cloned()
+            .context("This run has no accepted test-developer artifact")?
+    } else {
+        read_json(&directory.join("artifacts/test-developer.json"))?
+    };
     let tests: Vec<Value> = artifact["tests"]
         .as_array()
         .context("Missing saved tests")?
