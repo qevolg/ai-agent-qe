@@ -31,8 +31,8 @@
 
 **Interfaces:** Store still creates a string run ID; `run_tui` receives that ID explicitly from the coordinator; legacy `run_tmux` naming remains supported.
 
-- [ ] Add a deterministic UTC fixture covering Shanghai midnight rollover, check stored `+08:00` timestamps and new Store identity; update real coordinator integration to assert `aaqe-<state.id>`.
-- [ ] Observe naming assertions fail, implement shared conversion/session identity and compatible cleanup patterns, then run core/MCP/transport tests.
+- [x] Add a deterministic UTC fixture covering Shanghai midnight rollover, check stored `+08:00` timestamps and new Store identity; update real coordinator integration to assert `aaqe-<state.id>`.
+- [x] Observe naming assertions fail, implement shared conversion/session identity and compatible cleanup patterns, then run core/MCP/transport tests.
 
 ### Task 2: Chinese validation report
 
@@ -40,9 +40,9 @@
 
 **Interfaces:** Existing `generate_report` and JSON fields remain stable; only Markdown presentation and natural-language generation instructions change.
 
-- [ ] Add report cases for all verdicts, escaped table values, missing Hunter versus empty analyzed scope, and historical records excluded from current summary; observe failure.
-- [ ] Render opening summary, conclusion, scope/progress, environment/evidence, results, issue records, path adjustments, limits and replay/retention sections in Chinese; retain source/error/command literals and snapshot refresh.
-- [ ] Run reporting/orchestration tests and inspect actual rendered fixture output.
+- [x] Add report cases for all verdicts, escaped table values, missing Hunter versus empty analyzed scope, and historical records excluded from current summary; observe failure.
+- [x] Render opening summary, conclusion, scope/progress, environment/evidence, results, issue records, path adjustments, limits and replay/retention sections in Chinese; retain source/error/command literals and snapshot refresh.
+- [x] Run reporting/orchestration tests and inspect actual rendered fixture output.
 
 ### Task 3: Documentation, configuration and MIT
 
@@ -50,7 +50,7 @@
 
 **Interfaces:** Human documentation matches existing CLI/config schema; package include paths contain both languages, config example and license.
 
-- [ ] Create aligned READMEs with Mermaid architecture, install/quick start, complete CLI/options, YAML fields/defaults/path precedence, report semantics and lifecycle; preserve advanced reference in runtime document.
-- [ ] Add parseable annotated example and MIT license, update package metadata; verify help, relative links, example loading and package contents.
-- [ ] Run formatting, strict Clippy and all tests, opt-in real Docker workflow, Rust 1.88 checks, release/package verification; write Chinese validation evidence.
+- [x] Create aligned READMEs with Mermaid architecture, install/quick start, complete CLI/options, YAML fields/defaults/path precedence, report semantics and lifecycle; preserve advanced reference in runtime document.
+- [x] Add parseable annotated example and MIT license, update package metadata; verify help, relative links, example loading and package contents.
+- [x] Run formatting, strict Clippy and all tests, opt-in real Docker workflow, Rust 1.88 checks, release/package verification; write Chinese validation evidence.
 - [ ] Review full diff independently, address material findings, commit and publish to remote, verify remote SHA and report CI separately.

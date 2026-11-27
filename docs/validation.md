@@ -1,4 +1,77 @@
-# Validation
+# 验证记录
+
+## 中文报告、上海时间编号与双语文档（2026-11-27）
+
+### 验证摘要
+
+| 验证对象／检查项 | 验证结论 | 简要说明 |
+| --- | --- | --- |
+| 最新代码复核 | 已完成 | 从远程 `main` 的 `03ae3a1` 开始；保留快照重建、运行互斥和报告错误下的清理语义 |
+| 运行编号与时间 | 通过 | `YYYYMMDDHHmmss-xxxxxxxx`、八位随机后缀、Asia/Shanghai；覆盖跨日、跨年及旧编号读取 |
+| tmux 主窗口 | 通过 | 会话为 `aaqe-<RUN_ID>`；验证结束后保留、继续交互、归属检查与重复清理 |
+| 中文验证报告 | 通过 | 开头汇总表及参考报告的八个主题；五种判定、表格转义、未完成分析、历史与复现记录分别处理 |
+| 普通测试（Rust 1.96.0） | 通过 | 118 项通过、零失败；1 项 Docker 测试默认忽略并单独执行 |
+| 最低支持版本（Rust 1.88.0） | 通过 | 同样 118 项通过、零失败；严格 Clippy、Release 与发布包编译均通过 |
+| 真实 Docker 流程 | 通过 | 1 项显式启用测试同时覆盖文件 Compose 和 early inline Compose，模型输出使用确定性夹具 |
+| 文档与配置 | 通过 | 9 个帮助入口及多层 help；19 个相对链接；两种语言的 Mermaid 架构图；配置示例实际加载并通过 doctor |
+| MIT 与发布包 | 通过 | Cargo 声明 `license = "MIT"`；发布包包含 LICENSE、双语 README、配置模板和运行参考文档 |
+
+### 验证结论
+
+本轮变更在下述本地环境和执行范围内通过验证。运行状态 `completed` 表示审计流程完成，候选可以仍为受阻或已确认缺陷；报告不将其计为产品验收通过。汇总只使用当前候选及有效判定，历史重试和独立复现不重复累计。缺少 Hunter 分析产物与完成分析后没有候选使用不同说明。
+
+### 验证范围与进度
+
+新编号同时用于运行目录、`aaqe/<RUN_ID>` 分支、`aaqe-<RUN_ID>` Docker 项目和主 tmux 会话；时间记录带 `+08:00`。编号和 `created_at` 共享同一次时钟读取。历史编号、时间值、Python 版运行记录和旧 tmux 会话继续按原值读取与清理。
+
+报告保留现有 JSON 结构与状态枚举，Markdown 和新阶段自然语言字段使用简体中文。原始日志、错误、命令、标识符和历史自由文本保留原值。快照重建、基线/目标测试证据、清理状态刷新及复现追加记录均有回归覆盖。
+
+默认英文 README 与中文 README 按相同结构说明安装、快速开始、架构、全部公开 CLI 参数、配置字段与默认值、路径和优先级、报告及资源生命周期。详细 MCP/环境说明移入 `docs/runtime.md`；根目录新增 `aaqe.yaml.example`。配置仍为可选，只从调用目录或显式 `--config` 读取。
+
+### 环境与证据
+
+本地使用 Linux、Rust 1.96.0 / 1.88.0、Codex CLI 0.172.0、tmux 3.4、Docker Engine 29.6.1、Compose v5.3.0、Python 3 及 Python 3.12 slim 容器。开发与验证在独立 Git Worktree 和独立 Cargo 构建目录中执行。
+
+可重跑的主要检查：
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+cargo build --locked --release
+cargo package --locked --allow-dirty --target-dir target/package-check
+cargo +1.88.0 clippy --locked --all-targets -- -D warnings
+cargo +1.88.0 test --locked --all-targets
+cargo +1.88.0 build --locked --release
+cargo +1.88.0 package --locked --allow-dirty --target-dir target/msrv-package-check
+cargo test --locked --test workflow real_docker_workflow_reproduction_and_owned_cleanup -- --ignored --nocapture
+```
+
+另执行 `git diff --check`、所有公开命令的 `--help`、多层 `help env shell`、`aaqe --config aaqe.yaml.example doctor`、Markdown 相对链接检查、Mermaid 解析和 `cargo package --list --allow-dirty`。
+
+### 验证结果
+
+普通测试使用真实临时 Git 仓库、真实 tmux 和确定性的 Codex/Docker 边界夹具。统计按顶层测试用例计数，子进程打印的嵌套测试结果不重复相加。专项报告测试覆盖所有五种 verdict、带竖线/换行的摘要单元格、受阻原因、当前执行与历史轮次、快照派生文件缺失或损坏后的重建。
+
+单独启用的 Docker 用例运行真实容器、只读 `/workspace`、可写结果目录、健康基线、已知失败的目标断言及精确 JUnit 证据，并验证选中重跑、测试补丁保护、离线依赖安装/超时恢复、恢复后复现及本轮资源清理。两种 Compose 场景均通过。
+
+### 问题记录
+
+验证阶段未发现阻断交付的问题。编号与创建时间的取时已统一。MIT 授权使用标准文本，版权署名为当前仓库所有者 `qevolg`。
+
+### 验证路径调整
+
+共享原检出目录的旧 Cargo 构建缓存曾使编译器读取过期接口；切换至独立 Worktree 的独立构建目录后，专项与完整检查均通过。该过程未更改产品依赖或测试结论。
+
+### 验证限制
+
+本轮没有执行新的真实模型业务产品审计；确定性模型夹具验证的是调度、执行、持久化与资源管理。自然语言采用中文通过提示词约束，历史文本与原始证据不自动翻译。本地检查通过与远程 CI 状态分别记录，不能据此认定 GitHub Actions 已通过。
+
+### 环境保留与再次验证
+
+本轮回归使用的临时容器和 tmux 资源由测试清理。实际审计仍保留环境，用户可按报告中的命令 `reproduce`、`env status`、`env shell` 与 `cleanup` 操作；清理保留报告、日志、分支和 Worktree。
+
+以下为既有验证历史，保留当时的结果、工具版本和范围。
 
 ## Container test dependency recovery — 2026-11-27
 
