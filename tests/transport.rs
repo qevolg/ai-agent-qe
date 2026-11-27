@@ -51,6 +51,12 @@ impl Drop for Sessions {
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|s| s.to_string()).collect()
 }
+fn coordinator_id() -> String {
+    format!(
+        "20261125081514-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    )
+}
 fn ready(path: &Path) {
     let limit = Instant::now() + Duration::from_secs(8);
     while !path.exists() && Instant::now() < limit {
@@ -389,7 +395,14 @@ fn tui_exit_during_pane_query_preserves_the_recorded_result() {
         } else {
             "while [ ! -f \"$AAQE_TUI_EXIT_RACE_DIR/pane-query\" ]; do sleep .01; done; exit 23"
         };
-        let result = run_tui(&strings(&["sh", "-c", command]), root, &stage, 10, &|_| {});
+        let result = run_tui(
+            &strings(&["sh", "-c", command]),
+            root,
+            &stage,
+            &coordinator_id(),
+            10,
+            &|_| {},
+        );
         if completed {
             result.unwrap();
         } else {
@@ -476,6 +489,7 @@ fn tui_timeout_kills_descendants_that_outlive_the_leader() {
         &strings(&["python3", script.to_str().unwrap()]),
         dir.path(),
         &stage,
+        &coordinator_id(),
         1,
         &|_| {},
     )

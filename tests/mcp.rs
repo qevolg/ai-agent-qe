@@ -58,11 +58,7 @@ fn native_coordinator_retains_one_interactive_tui_and_fresh_background_stages() 
     let coordinator = directory.join("stages/coordinator");
     let metadata = read_json(&coordinator.join("tmux.json")).unwrap();
     let session = metadata["session"].as_str().unwrap();
-    assert!(
-        regex::Regex::new(r"^aaqe-[0-9a-f]{12}$")
-            .unwrap()
-            .is_match(session)
-    );
+    assert_eq!(session, format!("aaqe-{}", state["id"].as_str().unwrap()));
     let terminal = read_json(&coordinator.join("terminal.json")).unwrap();
     assert_eq!(terminal, json!({"stdin":true,"stdout":true,"stderr":true}));
     std::thread::sleep(std::time::Duration::from_millis(3200));

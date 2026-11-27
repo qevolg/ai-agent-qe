@@ -106,6 +106,9 @@ impl Codex {
             &command,
             &workspace,
             &directory,
+            inputs["state"]["id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing run ID"))?,
             self.config.run_timeout,
             &|message| eprintln!("{message}"),
         )

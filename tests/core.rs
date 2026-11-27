@@ -3,6 +3,35 @@ use serde_json::{Value, json};
 use std::{fs, path::Path};
 
 #[test]
+fn new_run_identity_uses_shanghai_wall_time_and_keeps_legacy_ids_readable() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::new(temp.path());
+    let state = store
+        .create("audit", &Config::default(), temp.path())
+        .unwrap();
+    let id = state["id"].as_str().unwrap();
+    assert!(
+        regex::Regex::new(r"^[0-9]{14}-[0-9a-f]{8}$")
+            .unwrap()
+            .is_match(id),
+        "{id}"
+    );
+    let created =
+        chrono::DateTime::parse_from_rfc3339(state["created_at"].as_str().unwrap()).unwrap();
+    assert_eq!(created.offset().local_minus_utc(), 28_800);
+    let named = chrono::NaiveDateTime::parse_from_str(&id[..14], "%Y%m%d%H%M%S").unwrap();
+    assert!((created.naive_local() - named).num_seconds().abs() <= 1);
+    assert_eq!(store.load(id).unwrap()["id"], id);
+    let mut legacy = state.clone();
+    legacy["id"] = json!("20261125T081514Z-ab12cd34");
+    store.save(&legacy).unwrap();
+    assert_eq!(
+        store.load("20261125T081514Z-ab12cd34").unwrap()["id"],
+        legacy["id"]
+    );
+}
+
+#[test]
 fn stage_logs_keep_full_output_on_disk_with_bounded_head_and_tail_in_process_records() {
     let temp = tempfile::tempdir().unwrap();
     let command = vec!["python3".into(), "-c".into(), "import sys; sys.stdout.buffer.write(b'BEGIN\\n'+b'x'*2000000+b'\\nEND'); sys.stderr.buffer.write(b'ERROR-BEGIN\\n'+b'y'*2000000+b'\\nERROR-END')".into()];

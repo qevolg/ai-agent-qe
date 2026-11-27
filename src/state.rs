@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
-use chrono::Utc;
+use chrono::{DateTime, FixedOffset, Utc};
 use regex::Regex;
 use serde_json::{Value, json};
 use std::{
@@ -10,6 +10,33 @@ use uuid::Uuid;
 
 mod snapshot;
 pub use snapshot::HarnessSnapshot;
+
+#[cfg(test)]
+mod tests {
+    use super::shanghai_time;
+    use chrono::{DateTime, Utc};
+
+    #[test]
+    fn shanghai_run_time_rolls_into_the_next_day_and_year() {
+        for (utc, name, timestamp) in [
+            (
+                "2026-11-25T00:15:14Z",
+                "20261125081514",
+                "2026-11-25T08:15:14+08:00",
+            ),
+            (
+                "2026-12-31T16:00:00Z",
+                "20270101000000",
+                "2027-01-01T00:00:00+08:00",
+            ),
+        ] {
+            let instant: DateTime<Utc> = utc.parse().unwrap();
+            let local = shanghai_time(instant);
+            assert_eq!(local.format("%Y%m%d%H%M%S").to_string(), name);
+            assert_eq!(local.to_rfc3339(), timestamp);
+        }
+    }
+}
 
 /// Persistent inode: unlinking an advisory lock can allow two independent owners.
 pub struct RunLock(fs::File);
@@ -54,7 +81,12 @@ impl Drop for RunLock {
 use crate::config::Config;
 
 pub fn now() -> String {
-    Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false)
+    shanghai_time(Utc::now()).to_rfc3339_opts(chrono::SecondsFormat::Micros, false)
+}
+
+// Asia/Shanghai uses UTC+08:00 for present-day audit runs, independent of host TZ.
+fn shanghai_time(instant: DateTime<Utc>) -> DateTime<FixedOffset> {
+    instant.with_timezone(&FixedOffset::east_opt(8 * 60 * 60).unwrap())
 }
 
 pub fn expand_user(path: &Path) -> PathBuf {
@@ -146,7 +178,7 @@ impl Store {
     pub fn create(&self, prompt: &str, config: &Config, caller: &Path) -> Result<Value> {
         let run_id = format!(
             "{}-{}",
-            Utc::now().format("%Y%m%dT%H%M%SZ"),
+            shanghai_time(Utc::now()).format("%Y%m%d%H%M%S"),
             &Uuid::new_v4().simple().to_string()[..8]
         );
         let directory = self.path(&run_id)?;

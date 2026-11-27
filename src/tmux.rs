@@ -96,13 +96,18 @@ pub fn run_tui(
     argv: &[String],
     cwd: &Path,
     directory: &Path,
+    run_id: &str,
     timeout: u64,
     progress: &dyn Fn(&str),
 ) -> Result<()> {
     fs::create_dir_all(directory)?;
     let directory = directory.canonicalize()?;
     let cwd = cwd.canonicalize()?;
-    let session = format!("aaqe-{}", &Uuid::new_v4().simple().to_string()[..12]);
+    let session = format!("aaqe-{run_id}");
+    anyhow::ensure!(
+        session_pattern()?.is_match(&session),
+        "Invalid coordinator run ID"
+    );
     let mut guard = WorkerGuard {
         session: &session,
         directory: &directory,
@@ -292,6 +297,12 @@ fn start_session(
     Ok(())
 }
 
+fn session_pattern() -> Result<Regex> {
+    Ok(Regex::new(
+        r"^aaqe-(?:(?:[0-9]{14}|[0-9]{8}T[0-9]{6}Z)-[0-9a-f]{8}|(?:[A-Za-z0-9_-]+-)?[0-9a-f]{12})$",
+    )?)
+}
+
 // Validate every path and owner before taking any destructive action.
 fn owned_sessions(directory: &Path) -> Result<Vec<(String, PathBuf)>> {
     let directory = directory.canonicalize()?;
@@ -299,7 +310,7 @@ fn owned_sessions(directory: &Path) -> Result<Vec<(String, PathBuf)>> {
     if !stages.exists() {
         return Ok(vec![]);
     }
-    let pattern = Regex::new(r"^aaqe-(?:[A-Za-z0-9_-]+-)?[0-9a-f]{12}$")?;
+    let pattern = session_pattern()?;
     let mut pending = vec![stages];
     let mut metadata_paths = vec![];
     while let Some(path) = pending.pop() {
