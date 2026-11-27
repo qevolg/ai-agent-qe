@@ -99,6 +99,7 @@ Rust 1.88+, Git and tmux are required; Docker enables the real integration scena
 ```bash
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
+cargo build --locked --example aaqe-test-worker
 cargo test --locked --all-targets
 cargo test --locked --all-targets real_docker_workflow_reproduction_and_owned_cleanup -- --ignored --nocapture
 cargo build --locked --release

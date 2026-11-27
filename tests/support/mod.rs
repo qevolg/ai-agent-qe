@@ -14,22 +14,12 @@ pub fn worker() -> &'static Path {
             if let Some(path) = std::env::var_os("AAQE_TEST_WORKER") {
                 return PathBuf::from(path);
             }
-            use std::os::unix::fs::PermissionsExt;
             let executable = std::env::current_exe().unwrap();
-            let examples = executable.ancestors()
-                .map(|path| path.join("examples"))
-                .find(|path| path.is_dir()).expect("Cargo examples directory is missing");
-            fs::read_dir(examples).unwrap().filter_map(Result::ok)
-                .filter_map(|entry| {
-                    let name = entry.file_name();
-                    let name = name.to_str()?;
-                    let hash = name.strip_prefix("aaqe_test_worker-");
-                    if name != "aaqe-test-worker" && !hash.is_some_and(|hash| !hash.is_empty() && hash.bytes().all(|b| b.is_ascii_hexdigit())) { return None; }
-                    let metadata = entry.metadata().ok()?;
-                    (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-                        .then(|| (metadata.modified().unwrap(), entry.path()))
-                }).max_by_key(|(modified, _)| *modified).map(|(_, path)| path)
-                .expect("Build the Rust test worker first: cargo test --all-targets --no-run (or cargo build --example aaqe-test-worker)")
+            executable
+                .ancestors()
+                .map(|path| path.join("examples/aaqe-test-worker"))
+                .find(|path| path.is_file())
+                .expect("Build the Rust test worker first: cargo build --locked --example aaqe-test-worker")
         })
         .as_path()
 }
