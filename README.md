@@ -106,6 +106,11 @@ the same base commit and worktree, and archives prior checkpoints under
 budgets. Changed upstream analysis/tests invalidate dependent results. Matching
 execution can be reused for Validator; missing evidence triggers execution again.
 A policy refusal remains terminal.
+If a resumed TUI times out, crashes or closes after the original command returns,
+a detached watcher finalizes that round and updates the report. Revised accepted
+tests append a commit on the existing publication branch and update the same MR.
+Abnormal finalization writes local results without waiting for remote publication;
+use `aaqe publish RUN_ID` to retry delivery after a timeout.
 
 New Runs copy AAQE into `RUN_DIR/runtime/aaqe` and record its SHA-256 and version.
 All internal workers use the pinned copy. The installer verifies and flushes a
@@ -118,11 +123,12 @@ aaqe resume --run-dir ~/.aaqe/runs/RUN_ID --from-stage test-validator --takeover
 
 Takeover checks snapshot/protocol compatibility and saves a new executor alongside
 all previous copies. Modern MCP relays route subsequent requests to it without
-restarting the TUI. Legacy Runs acquire their first snapshot on resume; a live
-legacy MCP cannot hot-load the fix, so AAQE delivers an explicit terminal-tool
-bridge instruction to the same conversation. If that conversation cannot execute
-the bridge, retain its history and close the old coordinator before retrying resume
-to launch a replacement. Installing a file alone never repairs an old live MCP.
+restarting the TUI. A live legacy coordinator cannot adopt the new executor:
+its MCP predates the relay and its terminal sandbox is read-only. Resume rejects
+this case before changing the Run. Preserve its conversation history and close the
+old coordinator TUI, then retry resume to launch a replacement on the same Run.
+Legacy Runs acquire their first snapshot and relay on that recovery. Installing a
+file alone never repairs an old live MCP.
 
 Only test code and necessary test fixtures in the audited project may change.
 Tests may live anywhere, including inline source tests. Developer and independent

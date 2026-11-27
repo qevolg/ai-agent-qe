@@ -126,12 +126,18 @@ upstream role to invalidate downstream results, rather than editing state files.
 The same Git base and exact accepted patch must still match. Cleaned environments
 and terminal policy refusals require a new audit. `finish` finalizes reports and
 publication even when the original outer command has already returned.
+An independent watcher finalizes resumed rounds after coordinator exit or tmux
+closure. Its cancellation and exit handlers check the coordinator owner under
+the Run lock. Abnormal exits save reports without remote publication delays;
+blocked timeout results can be delivered later with `aaqe publish RUN_ID`.
 
 `state.executor` records the immutable path, version, SHA-256 and relay protocol.
 Normal resume invokes that saved executor. `--takeover` explicitly copies the
 installed compatible executor to a new runtime subdirectory and records history;
 old copies are never overwritten. New relays dispatch each request through the
-active snapshot, preserving the interactive conversation. A live legacy MCP needs
-the terminal bridge described in the generated resume instruction. Linux snapshots
+active snapshot, preserving the interactive conversation. A live legacy coordinator
+cannot recover through its read-only terminal sandbox: close the old TUI, preserving
+its history, and retry resume to start a replacement on the same Run. Recovery rejects
+a live legacy coordinator before changing state. Linux snapshots
 read `/proc/self/exe`, preserving the actual running inode after an atomic install.
 No executor paths, hashes or recovery offsets belong in user YAML.

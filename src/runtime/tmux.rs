@@ -115,12 +115,39 @@ pub fn run_tui(
         directory: &directory,
         completed: false,
     };
+    let owner = Uuid::new_v4().to_string();
     start_session(
         &session,
         &cwd,
         &directory,
-        &json!({"argv":argv,"cwd":cwd,"timeout":timeout,"interactive":true}),
+        &json!({"argv":argv,"cwd":cwd,"timeout":timeout,"interactive":true,"owner":owner}),
     )?;
+    let mut watcher = Command::new(super::executor::for_directory(&directory)?);
+    watcher
+        .args([
+            "__coordinator-watch",
+            directory
+                .to_str()
+                .context("Invalid coordinator directory")?,
+            &owner,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(File::create(directory.join("watcher.log"))?);
+    unsafe {
+        watcher.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut watcher = watcher
+        .spawn()
+        .context("Cannot start persistent coordinator watcher")?;
+    thread::spawn(move || {
+        let _ = watcher.wait();
+    });
     progress(&format!("Codex session: tmux attach-session -t {session}"));
     let deadline = Instant::now() + Duration::from_secs(timeout.saturating_add(20));
     let run = directory
@@ -808,6 +835,79 @@ pub fn worker(directory: &Path) -> Result<()> {
         directory.display()
     );
     File::create(directory.join("finished"))?;
+    Ok(())
+}
+
+pub fn watch_coordinator(coordinator: &Path, owner: &str) -> Result<()> {
+    let run = coordinator
+        .parent()
+        .and_then(Path::parent)
+        .context("Missing run directory")?;
+    let mut dead_since = None;
+    let mut policy = super::policy::Monitor::new(coordinator.join("terminal.log"), true);
+    loop {
+        let Ok(invocation) = read_json(&coordinator.join("invocation.json")) else {
+            return Ok(());
+        };
+        if invocation["owner"] != owner {
+            return Ok(());
+        }
+        if super::policy::denial(run).is_none()
+            && let Some(reason) = policy.check()?
+        {
+            watcher_cancel(run, coordinator, owner, Some(reason))?;
+        }
+        if live_coordinator(run)?.is_some() {
+            dead_since = None;
+        } else if dead_since.get_or_insert_with(Instant::now).elapsed() >= Duration::from_secs(1) {
+            let saved = read_json(&run.join("harness.json"))?;
+            if saved["state"]["resume_round"].as_u64().unwrap_or(0) == 0 {
+                return Ok(());
+            }
+            watcher_cancel(run, coordinator, owner, None)?;
+            let executor = super::executor::resolve(run)?;
+            let result = process::run_uninterrupted(
+                &[
+                    executor.display().to_string(),
+                    "__coordinator-exit".into(),
+                    run.display().to_string(),
+                    owner.into(),
+                    saved["state"]["resume_round"].to_string(),
+                ],
+                None,
+                60,
+                None,
+            );
+            if result.returncode == 0 {
+                return Ok(());
+            }
+            eprintln!("Coordinator finalization failed: {}", result.stderr);
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+}
+
+fn watcher_cancel(
+    run: &Path,
+    coordinator: &Path,
+    owner: &str,
+    policy: Option<serde_json::Value>,
+) -> Result<()> {
+    // A replacement coordinator can occupy this path between observations.
+    // Cancellation and policy recording must belong to this generation too.
+    let Ok(_lock) = crate::state::RunLock::acquire(run) else {
+        return Ok(());
+    };
+    let Ok(invocation) = read_json(&coordinator.join("invocation.json")) else {
+        return Ok(());
+    };
+    if invocation["owner"] != owner {
+        return Ok(());
+    }
+    if let Some(reason) = policy {
+        super::policy::record(run, &coordinator.join("terminal.log"), reason)?;
+    }
+    File::create(coordinator.join("cancel"))?;
     Ok(())
 }
 

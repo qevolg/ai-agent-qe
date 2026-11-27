@@ -10,6 +10,41 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{fs, path::Path, process::Command};
 
+/// The detached watcher survives a closed tmux session and delegates to the
+/// active executor. Session identity and round checks reject delayed exits.
+pub fn coordinator_exit(directory: &Path, owner: &str, round: u64) -> Result<()> {
+    let _lock = RunLock::wait(directory)?;
+    let saved = HarnessSnapshot::load(directory)?;
+    let coordinator = directory.join("stages/coordinator");
+    let invocation = crate::state::read_json(&coordinator.join("invocation.json"))?;
+    if invocation["owner"] != owner || round == 0 || saved.state["resume_round"] != round {
+        return Ok(());
+    }
+    ensure!(
+        std::env::current_exe()?.canonicalize()? == executor::resolve(directory)?.canonicalize()?,
+        "Executor changed before coordinator finalization; retry"
+    );
+    let config: Config = serde_json::from_value(saved.state["config"].clone())?;
+    let agent = Codex::new(&config);
+    let factory = |workspace: &Path,
+                   directory: &Path,
+                   id: &str,
+                   spec: Value,
+                   timeout: u64|
+     -> Box<dyn TestRuntime> {
+        Box::new(ComposeEnvironment::new(
+            workspace, directory, id, spec, timeout,
+        ))
+    };
+    let progress = |message: &str| eprintln!("{message}");
+    let mut harness = AuditHarness::open(directory, &agent, &factory, &progress)?;
+    if saved.state["status"] != "running" {
+        return harness.finalize_after_exit();
+    }
+    let result = crate::state::read_json(&coordinator.join("process.json")).unwrap_or(Value::Null);
+    harness.coordinator_exited(result["timed_out"] == true)
+}
+
 pub fn resume(
     directory: &Path,
     from_stage: Option<&str>,
@@ -28,6 +63,10 @@ pub fn resume(
         "Audit terminated after a safety policy denial"
     );
     let live = tmux::live_coordinator(&directory)?;
+    ensure!(
+        live.is_none() || saved.state["mcp_relay_protocol"] == 1,
+        "Legacy coordinator cannot adopt recovery in its read-only sandbox. Preserve its history, close the old coordinator TUI, then retry this resume command to start a replacement. The Run was not modified."
+    );
     if saved.state["status"] == "running" {
         ensure!(
             live.is_none(),
@@ -70,6 +109,7 @@ pub fn resume(
     };
     let mut harness = AuditHarness::open(&directory, &agent, &factory, progress)?;
     harness.preflight_resume(from_stage)?;
+    saved = HarnessSnapshot::load(&directory)?;
     if takeover || saved.state["executor"].is_null() {
         if !saved.state["executor"].is_null() {
             ensure!(
@@ -89,6 +129,10 @@ pub fn resume(
         saved.state["executor"] = metadata;
         saved.save(&directory)?;
     }
+    if live.is_none() {
+        saved.state["mcp_relay_protocol"] = json!(1);
+        saved.save(&directory)?;
+    }
     harness.reload()?;
     let stage = match harness.resume(from_stage) {
         Ok(stage) => stage,
@@ -105,22 +149,10 @@ pub fn resume(
     let outcome = (|| -> Result<Value> {
         let archive = directory.join("resumes").join(format!("{round:04}"));
         let instruction = archive.join("instruction.md");
-        let legacy = saved.state["mcp_relay_protocol"] != 1;
-        let bridge = if legacy {
-            format!(
-                "原 MCP 进程不支持运行中更新。后续请通过终端工具调用固定的新执行器 {} __harness-request {}，以 stdin 传入 {{\"name\":\"status\",\"arguments\":{{}}}} 等请求，支持 status/run_stage/prepare_environment/execute_tests/finish；勿调用旧 MCP 的变更工具。",
-                shell_escape::unix::escape(
-                    executor::resolve(&directory)?.display().to_string().into()
-                ),
-                shell_escape::unix::escape(directory.display().to_string().into())
-            )
-        } else {
-            String::new()
-        };
         fs::write(
             &instruction,
             format!(
-                "请继续当前审计，从 {stage} 开始。恢复轮次 {round} 已启动；先读取 status，保留既有补丁和历史。若 resume_requires_execution 为 true，先 execute_tests。完成时调用 finish 更新报告。{bridge}\n"
+                "请继续当前审计，从 {stage} 开始。恢复轮次 {round} 已启动；先读取 status，保留既有补丁和历史。若 resume_requires_execution 为 true，先 execute_tests。完成时调用 finish 更新报告。\n"
             ),
         )?;
         progress(&format!(

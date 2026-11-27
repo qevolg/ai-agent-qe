@@ -243,6 +243,13 @@ fn coordinate(args: &[String], directory: &Path, settings: BTreeMap<&str, &str>)
                     false
                 );
             }
+            if flag(args, "--resume-hang") || flag(args, "--resume-crash") {
+                fs::write(directory.join("resuming.txt"), "").unwrap();
+                if flag(args, "--resume-crash") {
+                    std::process::exit(17);
+                }
+                thread::sleep(Duration::from_secs(60));
+            }
             assert_eq!(
                 client.tool(
                     "run_stage",

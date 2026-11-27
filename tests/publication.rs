@@ -91,8 +91,8 @@ fn publication_pushes_exact_patch_and_reuses_the_remote_mr() {
     config.publication.project = Some("https://gitlab.example/group/product".into());
     config.publication.glab_command = support::command(json!({"stdout":"[]"}));
     let mut state = json!({"id":"publication-test","workspace":workspace,"status":"blocked","audit_finalized":true});
-    let artifacts = json!({"test-validator":{"coverage_assessment":{"scope_valid":true,"measurement_valid":true,"meaningful_assertions":true,"rationale":"Reviewed"}},"test-developer":{"patch":patch,"tests":[{"id":"regression"}]}});
-    let execution = json!({"coverage":{"status":"below_threshold","percent":79}});
+    let mut artifacts = json!({"test-validator":{"coverage_assessment":{"scope_valid":true,"measurement_valid":true,"meaningful_assertions":true,"rationale":"Reviewed"}},"test-developer":{"patch":patch,"tests":[{"id":"regression"}]}});
+    let mut execution = json!({"coverage":{"status":"below_threshold","percent":79}});
     assert!(publish(&run, &mut state, &artifacts, &execution, &config).is_err());
     let commit = state["publication"]["commit"].as_str().unwrap().to_owned();
     assert_eq!(
@@ -136,6 +136,48 @@ fn publication_pushes_exact_patch_and_reuses_the_remote_mr() {
         state["publication"]["mr_url"],
         "https://gitlab.example/group/product/-/merge_requests/12"
     );
+    // A resumed Developer replaces the accepted cumulative patch, retaining the
+    // original audit base and already published branch/MR history.
+    let replacement = patch.replace("assert!(false)", "assert_eq!(1, 2)");
+    fs::write(
+        root.join("tests/regression.rs"),
+        "#[test] fn regression() { assert_eq!(1, 2); }\n",
+    )
+    .unwrap();
+    artifacts["test-developer"]["patch"] = json!(replacement);
+    state["resume_round"] = json!(1);
+    state["status"] = json!("completed");
+    execution["coverage"] = json!({"status":"passed","percent":100});
+    publish(&run, &mut state, &artifacts, &execution, &config).unwrap();
+    let revision = state["publication"]["commit"].as_str().unwrap().to_owned();
+    assert_ne!(revision, commit);
+    assert_eq!(
+        git(
+            root,
+            &[
+                "ls-remote",
+                "origin",
+                "refs/heads/aaqe-tests/publication-test"
+            ]
+        )
+        .unwrap()
+        .split_whitespace()
+        .next(),
+        Some(revision.as_str())
+    );
+    assert_eq!(
+        git(root, &["rev-parse", &format!("{revision}^")]).unwrap(),
+        commit
+    );
+    assert_eq!(state["publication"]["history"][0]["commit"], commit);
+    assert_eq!(state["publication"]["iid"], 12);
+    assert_eq!(state["publication"]["draft"], false);
+    let update = aaqe::state::read_json(&temp.path().join("request.update.json")).unwrap();
+    assert!(!update["title"].as_str().unwrap().starts_with("Draft:"));
+    assert!(update["description"].as_str().unwrap().contains(&revision));
+    publish(&run, &mut state, &artifacts, &execution, &config).unwrap();
+    assert_eq!(state["publication"]["commit"], revision);
+    assert_eq!(state["publication"]["history"].as_array().unwrap().len(), 1);
     fs::write(root.join("tests/unrelated.rs"), "unrelated").unwrap();
     assert!(publish(&run, &mut state, &artifacts, &execution, &config).is_err());
 }

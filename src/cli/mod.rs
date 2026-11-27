@@ -69,6 +69,14 @@ enum Action {
     HarnessMcp { directory: PathBuf },
     #[command(name = "__harness-request", hide = true)]
     HarnessRequest { directory: PathBuf },
+    #[command(name = "__coordinator-watch", hide = true)]
+    CoordinatorWatch { directory: PathBuf, owner: String },
+    #[command(name = "__coordinator-exit", hide = true)]
+    CoordinatorExit {
+        directory: PathBuf,
+        owner: String,
+        round: u64,
+    },
     #[command(name = "__stage-worker", hide = true)]
     StageWorker { directory: PathBuf, parent: u32 },
     #[command(name = "__terminal-log", hide = true)]
@@ -144,6 +152,19 @@ fn execute(cli: Cli) -> Result<i32> {
         return Ok(0);
     }
     install_signals()?;
+    if let Some(Action::CoordinatorWatch { directory, owner }) = &cli.action {
+        crate::runtime::tmux::watch_coordinator(directory, owner)?;
+        return Ok(0);
+    }
+    if let Some(Action::CoordinatorExit {
+        directory,
+        owner,
+        round,
+    }) = &cli.action
+    {
+        crate::audit::recovery::coordinator_exit(directory, owner, *round)?;
+        return Ok(0);
+    }
     if let Some(Action::StageWorker { directory, parent }) = &cli.action {
         crate::runtime::process::stage_worker(directory, *parent)?;
         return Ok(0);

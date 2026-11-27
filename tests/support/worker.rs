@@ -122,8 +122,18 @@ fn configured(path: &Path, args: &[String]) {
                     json!(String::from_utf8(commit.stdout).unwrap().trim())
                 });
             if let Some(input) = args.windows(2).find(|pair| pair[0] == "--input") {
-                assert!(!capture.exists(), "MR was created more than once");
-                fs::copy(&input[1], capture).unwrap();
+                let update = args.windows(2).any(|pair| pair == ["--method", "PUT"]);
+                if update {
+                    fs::copy(&input[1], capture.with_extension("update.json")).unwrap();
+                    let body: Value =
+                        serde_json::from_slice(&fs::read(&input[1]).unwrap()).unwrap();
+                    mr["title"] = body["title"].clone();
+                    mr["description"] = body["description"].clone();
+                    mr["draft"] = json!(body["title"].as_str().unwrap().starts_with("Draft:"));
+                } else {
+                    assert!(!capture.exists(), "MR was created more than once");
+                    fs::copy(&input[1], capture).unwrap();
+                }
                 println!("{mr}");
             } else if args
                 .last()

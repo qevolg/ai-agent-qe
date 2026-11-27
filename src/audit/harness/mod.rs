@@ -542,7 +542,29 @@ impl<'a> AuditHarness<'a> {
     }
 
     /// Caller holds RunLock; persistent MCP finish must not depend on the outer CLI.
+    pub(crate) fn coordinator_exited(&mut self, timed_out: bool) -> Result<()> {
+        self.state["status"] = json!(if timed_out { "blocked" } else { "interrupted" });
+        self.state["error"] = json!(if timed_out {
+            "Resumed coordinator timed out without calling finish"
+        } else {
+            "Resumed coordinator exited without calling finish"
+        });
+        self.state["finish_reason"] = self.state["error"].clone();
+        // Record abnormal exits without waiting for remote publication. A
+        // blocked Run can retry publication explicitly after reading its report.
+        self.finalize_with_publication(false)
+    }
+
+    /// Caller holds RunLock; persistent MCP finish must not depend on the outer CLI.
     pub fn finalize(&mut self) -> Result<()> {
+        self.finalize_with_publication(true)
+    }
+
+    pub(crate) fn finalize_after_exit(&mut self) -> Result<()> {
+        self.finalize_with_publication(false)
+    }
+
+    fn finalize_with_publication(&mut self, auto_publish: bool) -> Result<()> {
         if self.state["audit_finalized"] == true {
             crate::reporting::refresh_report(&self.directory, &self.state)?;
             return Ok(());
@@ -583,9 +605,10 @@ impl<'a> AuditHarness<'a> {
         self.state["finished_at"] = json!(now());
         self.state["audit_finalized"] = json!(true);
         self.save()?;
-        if self.artifacts["test-developer"]["patch"]
-            .as_str()
-            .is_some_and(|patch| !patch.trim().is_empty())
+        if auto_publish
+            && self.artifacts["test-developer"]["patch"]
+                .as_str()
+                .is_some_and(|patch| !patch.trim().is_empty())
             && self.state["status"] != "interrupted"
             && crate::runtime::policy::denial(&self.directory).is_none()
         {

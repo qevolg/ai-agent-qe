@@ -151,6 +151,13 @@ impl Drop for ServerGuard {
 /// A single request is executed by the current pinned executor, not the relay.
 pub fn request(directory: &Path, params: &Value) -> Result<Value> {
     let _operation = crate::state::RunLock::acquire(directory)?;
+    // Relay selection can race an explicit takeover before this lock is held.
+    // Never let a delayed old worker mutate a Run on the replacement's behalf.
+    anyhow::ensure!(
+        std::env::current_exe()?.canonicalize()?
+            == crate::runtime::executor::for_directory(directory)?.canonicalize()?,
+        "Executor changed before this request acquired the Run lock; retry the tool call"
+    );
     let saved = read_json(&directory.join("harness.json"))?;
     let config: Config = serde_json::from_value(saved["state"]["config"].clone())?;
     let agent = Codex::new(&config);

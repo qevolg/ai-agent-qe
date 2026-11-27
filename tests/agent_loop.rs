@@ -1345,3 +1345,113 @@ fn failed_executor_takeover_does_not_leave_a_running_audit() {
         "blocked"
     );
 }
+
+#[test]
+fn abnormal_resume_finalizes_report_without_starting_slow_publication() {
+    let (temp, _state, directory) = audit("budget");
+    let mut saved = read_json(&directory.join("harness.json")).unwrap();
+    let marker = temp.path().join("publication-started");
+    saved["state"]["config"]["publication"]["project"] =
+        json!("https://gitlab.example/group/product");
+    saved["state"]["config"]["publication"]["glab_command"] =
+        json!(support::command(json!({"ready":marker,"delay_ms":10000})));
+    saved["state"]["status"] = json!("running");
+    saved["state"]["audit_finalized"] = json!(false);
+    saved["state"]["resume_round"] = json!(1);
+    aaqe::state::write_json(&directory.join("harness.json"), &saved).unwrap();
+    let coordinator = directory.join("stages/coordinator");
+    fs::create_dir_all(&coordinator).unwrap();
+    aaqe::state::write_json(
+        &coordinator.join("invocation.json"),
+        &json!({"owner":"owned"}),
+    )
+    .unwrap();
+    aaqe::state::write_json(
+        &coordinator.join("process.json"),
+        &json!({"timed_out":true}),
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let output = std::process::Command::new(saved["state"]["executor"]["path"].as_str().unwrap())
+        .arg("__coordinator-exit")
+        .arg(&directory)
+        .args(["owned", "1"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(started.elapsed().as_secs() < 5);
+    assert!(!marker.exists());
+    let report = read_json(&directory.join("report.json")).unwrap();
+    assert_eq!(report["resume_round"], 1);
+    assert_eq!(report["status"], "blocked");
+    // Retry can regenerate a missing report without starting remote publication.
+    fs::remove_file(directory.join("report.json")).unwrap();
+    let mut partial = read_json(&directory.join("harness.json")).unwrap();
+    partial["state"]["audit_finalized"] = json!(false);
+    aaqe::state::write_json(&directory.join("harness.json"), &partial).unwrap();
+    assert!(
+        std::process::Command::new(saved["state"]["executor"]["path"].as_str().unwrap())
+            .arg("__coordinator-exit")
+            .arg(&directory)
+            .args(["owned", "1"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(directory.join("report.json").exists());
+    assert_eq!(
+        read_json(&directory.join("harness.json")).unwrap()["state"]["audit_finalized"],
+        true
+    );
+    assert!(!marker.exists());
+}
+
+#[test]
+fn stale_watcher_cannot_cancel_a_replacement_coordinator() {
+    let (_temp, _state, directory) = audit("budget");
+    let mut saved = read_json(&directory.join("harness.json")).unwrap();
+    saved["state"]["status"] = json!("running");
+    saved["state"]["resume_round"] = json!(1);
+    aaqe::state::write_json(&directory.join("harness.json"), &saved).unwrap();
+    let coordinator = directory.join("stages/coordinator");
+    fs::create_dir_all(&coordinator).unwrap();
+    aaqe::state::write_json(
+        &coordinator.join("invocation.json"),
+        &json!({"owner":"old"}),
+    )
+    .unwrap();
+    let lock = aaqe::state::RunLock::acquire(&directory).unwrap();
+    let mut watcher =
+        std::process::Command::new(saved["state"]["executor"]["path"].as_str().unwrap())
+            .arg("__coordinator-watch")
+            .arg(&coordinator)
+            .arg("old")
+            .spawn()
+            .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    aaqe::state::write_json(
+        &coordinator.join("invocation.json"),
+        &json!({"owner":"replacement"}),
+    )
+    .unwrap();
+    let checkpoint = fs::read(directory.join("harness.json")).unwrap();
+    drop(lock);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Some(status) = watcher.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!coordinator.join("cancel").exists());
+    assert_eq!(
+        fs::read(directory.join("harness.json")).unwrap(),
+        checkpoint
+    );
+}

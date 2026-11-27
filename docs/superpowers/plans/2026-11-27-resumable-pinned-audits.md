@@ -49,13 +49,13 @@ Only test code may change in the audited target project. AAQE implementation may
 
 - [x] Write resume lifecycle, budgets, invalidation, stale evidence and concurrent operation tests; observe failures.
 - [x] Implement stage selection, checkpoint archives, recovery integrity and budget offsets.
-- [x] Add CLI resume and harness resume, retained-TUI delivery, replacement TUI fallback, legacy bridge and explicit takeover.
+- [x] Add CLI resume and harness resume, retained-TUI delivery, replacement TUI fallback and explicit takeover. Review found legacy terminals cannot perform a writable bridge; reject live legacy recovery and require closing the old TUI first.
 - [x] Factor idempotent finalization callable after persistent harness finish.
 - [x] Verify focused and full suite; expected all pass. Commit task.
 
 ### Task 4: Documentation, review and publication
 
 - [ ] Document commands, lifecycle and upgrade limitations in both READMEs/configuration docs.
-- [ ] Run fmt, clippy, complete native test suite and release build.
-- [ ] Request one fresh-context whole-branch reviewer, fix important findings with failing regression tests.
+- [x] Run fmt, clippy, complete native test suite and release build.
+- [x] Request one fresh-context whole-branch reviewer, fix important findings with failing regression tests.
 - [ ] Commit and push approved task branch, verify remote SHA.

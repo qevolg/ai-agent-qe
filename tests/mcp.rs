@@ -399,6 +399,17 @@ fn resume_and_takeover_reuse_the_original_tui_and_relay() {
         "completed"
     );
     fs::remove_file(coordinator.join("resumed.txt")).unwrap();
+    // Pause a request from the old relay selection before it can acquire the
+    // Run lock, then let a new executor take over in that scheduling gap.
+    let mut stale = Command::new(state["executor"]["path"].as_str().unwrap())
+        .arg("__harness-request")
+        .arg(&directory)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stale_input = stale.stdin.take().unwrap();
     // A newer installed executor explicitly takes over without replacing TUI/MCP.
     let output = Command::new(env!("CARGO_BIN_EXE_aaqe"))
         .args(["resume", "--run-dir"])
@@ -430,6 +441,21 @@ fn resume_and_takeover_reuse_the_original_tui_and_relay() {
     assert!(log.contains(saved["state"]["executor"]["path"].as_str().unwrap()));
     assert!(directory.join("resumes/0001/harness.json").is_file());
     assert!(directory.join("resumes/0002/harness.json").is_file());
+    let checkpoint = fs::read(directory.join("harness.json")).unwrap();
+    writeln!(
+        stale_input,
+        "{}",
+        json!({"name":"resume","arguments":{"from_stage":"bug-hunter"}})
+    )
+    .unwrap();
+    drop(stale_input);
+    let rejected = stale.wait_with_output().unwrap();
+    assert_eq!(rejected.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("Executor changed"));
+    assert_eq!(
+        fs::read(directory.join("harness.json")).unwrap(),
+        checkpoint
+    );
 }
 
 fn wait_for(path: &Path) {
@@ -441,6 +467,102 @@ fn wait_for(path: &Path) {
             path.display()
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn retained_resume_finalizes_after_timeout_crash_or_tmux_close() {
+    for failure in ["timeout", "crash", "tmux-close"] {
+        let temp = tempfile::tempdir().unwrap();
+        repo(temp.path());
+        let config = Config {
+            state_dir: temp.path().join("runs"),
+            codex_command: support::codex(&[
+                "--loop-test",
+                "--resume-test",
+                if failure == "crash" {
+                    "--resume-crash"
+                } else {
+                    "--resume-hang"
+                },
+            ]),
+            run_timeout: 20,
+            ..Config::default()
+        };
+        let _cleanup = Cleanup(config.state_dir.clone());
+        let state =
+            aaqe::audit::workflow::run_audit("audit", temp.path(), &config, &|_| {}).unwrap();
+        assert_eq!(state["status"], "blocked");
+        let directory = config.state_dir.join(state["id"].as_str().unwrap());
+        let coordinator = directory.join("stages/coordinator");
+        let mut saved = read_json(&directory.join("harness.json")).unwrap();
+        saved["state"]["config"]["run_timeout"] = json!(3);
+        aaqe::state::write_json(&directory.join("harness.json"), &saved).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_aaqe"))
+            .args(["resume", "--run-dir"])
+            .arg(&directory)
+            .arg("--takeover")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        wait_for(&coordinator.join("resuming.txt"));
+        // Delayed exit notifications from a prior round or coordinator cannot
+        // terminate this still-active round.
+        let owner = read_json(&coordinator.join("invocation.json")).unwrap()["owner"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let active = read_json(&directory.join("harness.json")).unwrap();
+        if failure == "tmux-close" {
+            let checkpoint = fs::read(directory.join("harness.json")).unwrap();
+            for (old_owner, old_round) in [(&owner[..], "0"), ("old-coordinator", "1")] {
+                assert!(
+                    Command::new(active["state"]["executor"]["path"].as_str().unwrap())
+                        .arg("__coordinator-exit")
+                        .arg(&directory)
+                        .args([old_owner, old_round])
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+                assert_eq!(
+                    fs::read(directory.join("harness.json")).unwrap(),
+                    checkpoint
+                );
+            }
+        }
+        if failure == "tmux-close" {
+            let session = read_json(&coordinator.join("tmux.json")).unwrap()["session"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            assert!(
+                Command::new("tmux")
+                    .args(["kill-session", "-t", &session])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let report = read_json(&directory.join("report.json")).unwrap();
+            let saved = read_json(&directory.join("harness.json")).unwrap();
+            if saved["state"]["status"] != "running" && report["resume_round"] == 1 {
+                assert_eq!(saved["state"]["audit_finalized"], true);
+                assert_eq!(report["status"], saved["state"]["status"]);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{failure}: abandoned running state {saved}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 }
 
@@ -458,6 +580,29 @@ fn resume_launches_a_replacement_tui_only_after_the_original_is_gone() {
     let state = aaqe::audit::workflow::run_audit("audit", temp.path(), &config, &|_| {}).unwrap();
     let directory = config.state_dir.join(state["id"].as_str().unwrap());
     let old_pid = fs::read_to_string(directory.join("stages/coordinator/tui.pid")).unwrap();
+    // A legacy coordinator has no writable terminal bridge in its read-only
+    // sandbox. Recovery must not leave it running with unusable instructions.
+    let mut legacy = read_json(&directory.join("harness.json")).unwrap();
+    legacy["state"]["executor"] = Value::Null;
+    legacy["state"]["mcp_relay_protocol"] = Value::Null;
+    aaqe::state::write_json(&directory.join("harness.json"), &legacy).unwrap();
+    let checkpoint = fs::read(directory.join("harness.json")).unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_aaqe"))
+        .args(["resume", "--run-dir"])
+        .arg(&directory)
+        .arg("--takeover")
+        .output()
+        .unwrap();
+    assert_eq!(rejected.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&rejected.stdout).contains("Legacy coordinator"));
+    assert_eq!(
+        fs::read(directory.join("harness.json")).unwrap(),
+        checkpoint
+    );
+    assert_eq!(
+        fs::read_to_string(directory.join("stages/coordinator/tui.pid")).unwrap(),
+        old_pid
+    );
     cleanup_tmux(&directory).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_aaqe"))
         .args(["resume", "--run-dir"])
@@ -476,6 +621,8 @@ fn resume_launches_a_replacement_tui_only_after_the_original_is_gone() {
     let saved = read_json(&directory.join("harness.json")).unwrap();
     assert_eq!(saved["state"]["workspace"], state["workspace"]);
     assert_eq!(saved["state"]["status"], "blocked");
+    assert_eq!(saved["state"]["mcp_relay_protocol"], 1);
+    assert!(saved["state"]["executor"]["path"].is_string());
     assert_eq!(saved["state"]["stages"].as_array().unwrap().len(), 6);
     assert_ne!(
         fs::read_to_string(directory.join("stages/coordinator/tui.pid")).unwrap(),

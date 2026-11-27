@@ -62,6 +62,17 @@ fn api(
     endpoint: &str,
     body: Option<&Path>,
 ) -> Result<Value> {
+    api_method(root, config, host, endpoint, body, "POST")
+}
+
+fn api_method(
+    root: &Path,
+    config: &Config,
+    host: &str,
+    endpoint: &str,
+    body: Option<&Path>,
+    method: &str,
+) -> Result<Value> {
     let mut command = config.publication.glab_command.clone();
     ensure!(
         !command.is_empty(),
@@ -76,7 +87,7 @@ fn api(
     if let Some(body) = body {
         command.extend([
             "--method".into(),
-            "POST".into(),
+            method.into(),
             "--input".into(),
             body.display().to_string(),
         ]);
@@ -196,12 +207,41 @@ fn publish_inner(
         &["rev-parse", "--verify", &format!("refs/heads/{branch}")],
     )
     .ok();
-    let commit = if let Some(commit) = state["publication"]["commit"]
+    let previous = state["publication"].clone();
+    let mut history = previous["history"].as_array().cloned().unwrap_or_default();
+    let saved_commit = state["publication"]["commit"]
         .as_str()
-        .or(saved_ref.as_deref())
-    {
+        .or(saved_ref.as_deref());
+    let parent = if let Some(commit) = saved_commit {
+        if let Some(reference) = &saved_ref {
+            ensure!(
+                reference == commit,
+                "Publication branch differs from saved commit"
+            );
+        }
+        git(root, &["merge-base", "--is-ancestor", base, commit])?;
+        let previous_tree = git(root, &["show", "-s", "--format=%T", commit])?;
+        if previous_tree != tree {
+            ensure!(
+                state["resume_round"].as_u64().unwrap_or(0) > 0,
+                "Saved publication commit differs from accepted patch"
+            );
+            let mut entry = previous.clone();
+            entry.as_object_mut().unwrap().remove("history");
+            if entry["commit"].is_null() {
+                entry["commit"] = json!(commit);
+            }
+            history.push(entry);
+            commit
+        } else {
+            base
+        }
+    } else {
+        base
+    };
+    let commit = if let Some(commit) = saved_commit.filter(|_| parent == base) {
         ensure!(
-            git(root, &["show", "-s", "--format=%T %P", commit])? == format!("{tree} {base}"),
+            git(root, &["show", "-s", "--format=%T", commit])? == tree,
             "Saved publication commit differs from accepted patch"
         );
         commit.to_owned()
@@ -212,7 +252,7 @@ fn publish_inner(
                 "commit-tree",
                 &tree,
                 "-p",
-                base,
+                parent,
                 "-m",
                 &format!(
                     "test: add AAQE regressions for {}",
@@ -223,7 +263,7 @@ fn publish_inner(
     };
     let draft =
         !crate::guards::coverage::approved(execution, artifacts) || state["status"] != "completed";
-    state["publication"] = json!({"status":"committed","commit":commit,"branch":branch,"target_branch":config.branch,"draft":draft,"project":format!("https://{host}/{project_path}")});
+    state["publication"] = json!({"status":"committed","commit":commit,"tree":tree,"history":history,"branch":branch,"target_branch":config.branch,"draft":draft,"project":format!("https://{host}/{project_path}")});
     write_json(&directory.join("publication.json"), &state["publication"])?;
     git(
         root,
@@ -269,22 +309,39 @@ fn publish_inner(
         existing.len() <= 1,
         "Multiple open merge requests for audit branch"
     );
+    let title = format!(
+        "{}test: AAQE regressions {}",
+        if draft { "Draft: " } else { "" },
+        state["id"].as_str().unwrap()
+    );
+    let description = format!(
+        "AAQE run: {}\n\nAudited base: {base}\n\nTest commit: {commit}\n\nModule line coverage (minimum 80%): {}\n\nAudit status: {}\n\n{}\n\nOnly accepted test changes are included. Product assertion failures remain evidence. Detailed logs and reports are retained by the audit operator.",
+        state["id"],
+        execution["coverage"],
+        state["status"],
+        state["finish_reason"].as_str().unwrap_or("")
+    );
+    let body = directory.join("publication-request.json");
     let mr = if let Some(mr) = existing.first() {
-        mr.clone()
+        let iid = mr["iid"].as_u64().context("GitLab MR has no IID")?;
+        ensure!(
+            mr["source_project_id"] == project_id
+                && mr["target_project_id"] == project_id
+                && mr["source_branch"] == branch
+                && mr["target_branch"] == config.branch
+                && mr["sha"] == commit,
+            "Existing MR differs from the published branch"
+        );
+        write_json(&body, &json!({"title":title,"description":description}))?;
+        api_method(
+            root,
+            config,
+            &host,
+            &format!("{endpoint}/{iid}"),
+            Some(&body),
+            "PUT",
+        )?
     } else {
-        let title = format!(
-            "{}test: AAQE regressions {}",
-            if draft { "Draft: " } else { "" },
-            state["id"].as_str().unwrap()
-        );
-        let description = format!(
-            "AAQE run: {}\n\nAudited base: {base}\n\nTest commit: {commit}\n\nModule line coverage (minimum 80%): {}\n\nAudit status: {}\n\n{}\n\nOnly accepted test changes are included. Product assertion failures remain evidence. Detailed logs and reports are retained by the audit operator.",
-            state["id"],
-            execution["coverage"],
-            state["status"],
-            state["finish_reason"].as_str().unwrap_or("")
-        );
-        let body = directory.join("publication-request.json");
         write_json(
             &body,
             &json!({"source_branch":branch,"target_branch":config.branch,"title":title,"description":description,"remove_source_branch":false}),
