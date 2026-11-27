@@ -94,3 +94,5 @@ After finish, remain available in this interactive TUI for questions about the
 saved results. The outer AAQE command generates the report and returns while
 this session stays open. Use status to read the finalized state; a finished
 audit cannot dispatch further stages or be finished again.
+
+Write user-facing summaries, dispatch instructions and finish reasons in Simplified Chinese. Ask stage workers to use Simplified Chinese for natural-language output fields. Preserve schema keys, enum values, code, commands, paths and original evidence text.

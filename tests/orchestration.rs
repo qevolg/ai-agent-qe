@@ -174,7 +174,7 @@ fn reports_refresh_without_overwriting_original_evidence_or_verdicts() {
     let markdown = fs::read_to_string(temp.path().join("report.md")).unwrap();
     assert!(
         markdown.contains("检查模块")
-            && markdown.contains("Owned tmux sessions cleaned at")
-            && markdown.contains("Reproduction attempts")
+            && markdown.contains("本轮 tmux 会话已清理")
+            && markdown.contains("复现记录")
     );
 }
