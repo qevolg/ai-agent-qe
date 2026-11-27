@@ -176,9 +176,10 @@ impl Store {
     }
 
     pub fn create(&self, prompt: &str, config: &Config, caller: &Path) -> Result<Value> {
+        let created_at = shanghai_time(Utc::now());
         let run_id = format!(
             "{}-{}",
-            shanghai_time(Utc::now()).format("%Y%m%d%H%M%S"),
+            created_at.format("%Y%m%d%H%M%S"),
             &Uuid::new_v4().simple().to_string()[..8]
         );
         let directory = self.path(&run_id)?;
@@ -191,7 +192,7 @@ impl Store {
         #[cfg(not(unix))]
         fs::create_dir(&directory)?;
         let state = json!({
-            "id":run_id,"created_at":now(),"prompt":prompt,"caller":absolute_path(caller),
+            "id":run_id,"created_at":created_at.to_rfc3339_opts(chrono::SecondsFormat::Micros, false),"prompt":prompt,"caller":absolute_path(caller),
             "config":config,"status":"initializing","stage":0,"stages":[],"error":null,
             "workspace":null,"environment":null
         });
