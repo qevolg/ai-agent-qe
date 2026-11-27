@@ -187,7 +187,9 @@ fn codex_bundles_skills_and_validates_output() {
             "bug-hunter",
             dir.path(),
             &stage,
-            &json!({"prompt":"check the module"}),
+            &json!({"prompt":"check the module", "stage":"bug-hunter",
+                "artifacts":{"code-explorer":{"summary":"scope", "references":[{"id":"ref", "claim":"large evidence ".repeat(10000)}]}},
+                "artifact_index":[{"stage":"code-explorer","summary":"scope","path":"/saved/explorer.json"}]}),
             &|message| {
                 assert!(!message.contains("tmux attach-session"));
             },
@@ -199,6 +201,20 @@ fn codex_bundles_skills_and_validates_output() {
         prompt.contains("check the module")
             && prompt.contains("Inputs")
             && prompt.contains("Outputs")
+    );
+    assert!(
+        !prompt.contains("large evidence"),
+        "full artifact duplicated in prompt"
+    );
+    assert!(prompt.contains(stage.join("input.json").to_str().unwrap()));
+    assert!(prompt.contains("/artifacts/code-explorer/references"));
+    let saved = read_json(&stage.join("input.json")).unwrap();
+    assert!(
+        saved["artifacts"]["code-explorer"]["references"][0]["claim"]
+            .as_str()
+            .unwrap()
+            .len()
+            > 100_000
     );
     let invocation = read_json(&stage.join("invocation.json")).unwrap();
     assert!(
@@ -223,6 +239,37 @@ fn codex_bundles_skills_and_validates_output() {
         fs::read_to_string(stage.join("stderr.log")).unwrap(),
         "visible-diagnostic\n"
     );
+}
+
+#[test]
+fn ordinary_codex_failures_do_not_latch_a_policy_denial() {
+    for diagnostic in [
+        "401 Unauthorized: invalid API key",
+        "429 rate limit exceeded",
+        "Connection reset by peer",
+        r#"{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"blocked by cybersecurity policy"}}"#,
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stages/bug-hunter");
+        let config = Config {
+            codex_command: support::command(
+                json!({"stdin":false,"stderr":format!("{diagnostic}\n"),"exit":23}),
+            ),
+            agent_timeout: 5,
+            ..Config::default()
+        };
+        let error = Codex::new(&config)
+            .invoke(
+                "bug-hunter",
+                temp.path(),
+                &stage,
+                &json!({"prompt":"audit"}),
+                &|_| {},
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("exit 23"), "{error}");
+        assert!(!stage.join("policy-denial.json").exists());
+    }
 }
 
 #[test]

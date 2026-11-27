@@ -80,7 +80,7 @@ impl AuditAgent for Agent {
             assert_eq!(result["status"], "completed");
             assert_ne!(old, harness.status()["execution"]["tests"][0]["directory"]);
         }
-        if self.mode == "crash-baseline" {
+        if self.mode == "crash-baseline" || self.mode == "policy-recovery-failure" {
             let status = harness.status();
             let root = PathBuf::from(status["workspace"]["path"].as_str().unwrap());
             let directory = PathBuf::from(status["state"]["config"]["state_dir"].as_str().unwrap())
@@ -96,6 +96,14 @@ impl AuditAgent for Agent {
             let mut saved = read_json(&directory.join("harness.json"))?;
             saved["state"]["baseline_restore_patch"] = json!(patch);
             aaqe::state::write_json(&directory.join("harness.json"), &saved)?;
+            if self.mode == "policy-recovery-failure" {
+                fs::create_dir_all(root.join("tests"))?;
+                fs::write(root.join("tests/generated.rs"), "obstruction\n")?;
+                aaqe::state::write_json(
+                    &directory.join("policy-denial.json"),
+                    &json!({"code":"policy_denied","message":"安全策略拒绝：original provider cause"}),
+                )?;
+            }
             bail!("MCP lost while the baseline patch was reversed");
         }
         assert_eq!(
@@ -379,6 +387,16 @@ fn coordinator_loss_during_baseline_recovers_the_generated_test_patch() {
             .exists()
     );
     assert!(state["baseline_restore_patch"].is_null());
+}
+
+#[test]
+fn policy_cause_remains_primary_when_patch_recovery_also_fails() {
+    let (_temp, state, directory) = audit("policy-recovery-failure");
+    assert_eq!(state["status"], "blocked");
+    assert!(state["recovery_error"].is_string(), "{state}");
+    assert_eq!(state["error"], "安全策略拒绝：original provider cause");
+    let report = fs::read_to_string(directory.join("report.md")).unwrap();
+    assert!(report.contains("安全策略拒绝：original provider cause"));
 }
 
 #[test]

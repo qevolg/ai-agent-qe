@@ -22,7 +22,7 @@ use std::{
 
 mod environment;
 mod inputs;
-pub(crate) use inputs::evidence_view;
+pub(crate) use inputs::{execution_summary, tool_view};
 
 pub struct AuditHarness<'a> {
     pub directory: PathBuf,
@@ -158,6 +158,10 @@ impl<'a> AuditHarness<'a> {
 
     fn stage_gate(&self, stage: &str, instruction: &str) -> Result<(usize, u64)> {
         ensure!(
+            crate::runtime::policy::denial(&self.directory).is_none(),
+            "Audit terminated after a safety policy denial"
+        );
+        ensure!(
             self.state["status"] == "running",
             "Audit is already finished"
         );
@@ -276,6 +280,11 @@ impl<'a> AuditHarness<'a> {
         self.state["stages"][entry]["status"] = result["status"].clone();
         self.state["stages"][entry]["finished_at"] = json!(now());
         self.state["stages"][entry]["error"] = result["error"].clone();
+        if let Some(denial) = crate::runtime::policy::denial(&self.directory) {
+            self.state["status"] = json!("blocked");
+            self.state["error"] = denial["message"].clone();
+            self.state["finished_at"] = json!(now());
+        }
         write_json(&directory.join("result.json"), &result)?;
         if stage == "test-developer" && directory.join("accepted.json").exists() {
             write_json(&directory.join("execution.json"), &result["execution"])?;
@@ -519,6 +528,10 @@ impl<'a> AuditHarness<'a> {
 
     pub fn finish(&mut self, status: &str, reason: &str) -> Result<()> {
         ensure!(
+            crate::runtime::policy::denial(&self.directory).is_none(),
+            "Audit terminated after a safety policy denial"
+        );
+        ensure!(
             self.state["status"] == "running",
             "Audit is already finished"
         );
@@ -642,6 +655,10 @@ pub fn audit(
     }
     if interrupted() {
         harness.state["status"] = json!("interrupted");
+    }
+    if let Some(denial) = crate::runtime::policy::denial(&harness.directory) {
+        harness.state["status"] = json!("blocked");
+        harness.state["error"] = denial["message"].clone();
     }
     for entry in harness.state["stages"].as_array_mut().unwrap() {
         if entry["status"] == "running" {

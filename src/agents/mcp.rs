@@ -26,8 +26,8 @@ pub fn tools() -> Value {
     json!([
         tool(
             "status",
-            "Read current accepted artifacts, execution, verdicts, attempts and budgets.",
-            json!({}),
+            "Read a compact progress summary. Request section for evidence details, optionally selecting stage with section=artifacts.",
+            json!({"section":{"type":"string","enum":["state","artifacts","execution","verdicts","history","environment"]},"stage":{"type":"string","enum":crate::agents::stage::STAGES}}),
             &[]
         ),
         tool(
@@ -77,8 +77,19 @@ fn call(harness: &mut AuditHarness<'_>, params: &Value) -> Result<Value> {
     validator
         .validate(&arguments)
         .map_err(|e| anyhow::anyhow!("Invalid tool arguments: {e}"))?;
+    if name != "status"
+        && let Some(denial) = crate::runtime::policy::denial(&harness.directory)
+    {
+        bail!("{}", denial["message"].as_str().unwrap_or("安全策略拒绝"));
+    }
+    anyhow::ensure!(
+        name != "status" || arguments.get("stage").is_none() || arguments["section"] == "artifacts",
+        "stage requires section=artifacts"
+    );
     match name {
-        "status" => Ok(harness.status()),
+        "status" => {
+            Ok(harness.model_status(arguments["section"].as_str(), arguments["stage"].as_str()))
+        }
         "run_stage" => harness.run_stage(
             arguments["stage"].as_str().unwrap(),
             arguments["instruction"].as_str().unwrap(),
@@ -108,7 +119,7 @@ fn call(harness: &mut AuditHarness<'_>, params: &Value) -> Result<Value> {
                 arguments["status"].as_str().unwrap(),
                 arguments["reason"].as_str().unwrap(),
             )?;
-            Ok(harness.status())
+            Ok(harness.model_status(None, None))
         }
         _ => bail!("Unknown harness tool"),
     }
@@ -225,7 +236,13 @@ pub fn serve(directory: &Path) -> Result<()> {
                         true,
                     ),
                 };
-                let value = crate::audit::harness::evidence_view(&value);
+                let value = if request["params"]["name"] == "status"
+                    || request["params"]["name"] == "finish"
+                {
+                    value
+                } else {
+                    crate::audit::harness::tool_view(&value)
+                };
                 json!({"result":{"content":[{"type":"text","text":serde_json::to_string(&value)?}],"structuredContent":value,"isError":error}})
             }
             _ => json!({"error":{"code":-32601,"message":"Method not found"}}),

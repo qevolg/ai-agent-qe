@@ -99,11 +99,7 @@ pub fn main() -> i32 {
 }
 fn execute(cli: Cli) -> Result<i32> {
     if let Some(Action::TerminalLog { path }) = &cli.action {
-        let mut output = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
-        io::copy(&mut io::stdin().lock(), &mut output)?;
+        crate::runtime::tmux::terminal_log(path)?;
         return Ok(0);
     }
     if let Some(Action::TmuxWorker { directory }) = &cli.action {

@@ -45,7 +45,10 @@ impl AuditHarness<'_> {
             .filter(|stage| self.stage_gate(stage, "status").is_ok())
             .copied()
             .collect();
-        if self.state["status"] == "running" && !interrupted() {
+        if self.state["status"] == "running"
+            && !interrupted()
+            && crate::runtime::policy::denial(&self.directory).is_none()
+        {
             actions.push("finish");
             if !available.is_empty() {
                 actions.push("run_stage");
@@ -60,6 +63,10 @@ impl AuditHarness<'_> {
         json!({"blocked_plan_ids":blocked,"permitted_next_actions":actions,"permitted_stages":available,"classification_action":"Return to test-designer to change semantic blockers; dispatch instructions cannot override them"})
     }
     fn operation_gate(&self) -> Result<u64> {
+        ensure!(
+            crate::runtime::policy::denial(&self.directory).is_none(),
+            "Audit terminated after a safety policy denial"
+        );
         ensure!(
             self.state["status"] == "running",
             "Audit is already finished"

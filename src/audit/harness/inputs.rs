@@ -2,6 +2,69 @@ use super::AuditHarness;
 use crate::agents::stage::STAGES;
 use serde_json::{Value, json};
 
+pub(crate) fn artifact_summary(value: &Value) -> Value {
+    let mut view = json!({"summary":value["summary"].as_str().map(|text|excerpt(text,2048))});
+    for key in ["references", "candidates", "plans", "tests", "verdicts"] {
+        if let Some(items) = value[key].as_array() {
+            let preview: Vec<_> = items
+                .iter()
+                .take(20)
+                .map(|item| {
+                    let mut entry = json!({});
+                    for field in [
+                        "id",
+                        "candidate_id",
+                        "test_id",
+                        "test_ids",
+                        "title",
+                        "status",
+                        "confidence",
+                        "blocked_reason",
+                        "execution_blocked_reason",
+                    ] {
+                        if let Some(value) = item.get(field) {
+                            entry[field] = value.clone();
+                        }
+                    }
+                    entry
+                })
+                .collect();
+            view[key] =
+                json!({"total":items.len(),"items":preview,"has_more":items.len()>preview.len()});
+        }
+    }
+    view
+}
+
+pub(crate) fn execution_summary(value: &Value) -> Value {
+    let mut view = json!({});
+    for key in ["baseline", "tests"] {
+        let items = value[key].as_array().cloned().unwrap_or_default();
+        let preview: Vec<_> = items.iter().take(20).map(|item| {
+            json!({"test_id":item["test_id"],"directory":item["directory"],
+                "result":{"returncode":item["result"]["returncode"],"timed_out":item["result"]["timed_out"],"stderr":item["result"]["stderr"].as_str().map(|text|excerpt(text,1024))},
+                "junit":{"complete":item["junit"]["complete"],"error":item["junit"]["error"]},"error":item["error"]})
+        }).collect();
+        view[key] =
+            json!({"total":items.len(),"items":preview,"has_more":items.len()>preview.len()});
+    }
+    view
+}
+
+pub(crate) fn tool_view(value: &Value) -> Value {
+    let mut view = evidence_view(value);
+    if let Some(artifact) = value.get("artifact") {
+        view["artifact"] = artifact_summary(artifact);
+    }
+    if let Some(execution) = value.get("execution") {
+        view["execution"] = execution_summary(execution);
+    }
+    if let Some(verdicts) = value.get("verdicts") {
+        view["verdicts"] = artifact_summary(&json!({"verdicts":verdicts}))["verdicts"].clone();
+    }
+    view
+}
+
 /// Log summaries in model payloads; complete logs remain at the evidence directory.
 pub(crate) fn evidence_view(value: &Value) -> Value {
     match value {
@@ -46,6 +109,54 @@ fn excerpt(text: &str, limit: usize) -> String {
 }
 
 impl AuditHarness<'_> {
+    pub fn model_status(&self, section: Option<&str>, stage: Option<&str>) -> Value {
+        let full = self.status();
+        if let Some(section) = section {
+            let value = match section {
+                "artifacts" => stage
+                    .map(|role| json!({role:self.artifacts[role]}))
+                    .unwrap_or_else(|| self.artifacts.clone()),
+                "history" => self.state["stages"].clone(),
+                "environment" => {
+                    json!({"environment":self.state["environment"],"setup":self.state["environment_setup"],"ready":self.state["environment_ready"],"actions":self.state["environment_actions"]})
+                }
+                _ => full[section].clone(),
+            };
+            return evidence_view(&json!({"section":section,"stage":stage,"data":value}));
+        }
+        let mut state = json!({});
+        for key in [
+            "id",
+            "prompt",
+            "status",
+            "stage",
+            "finished_at",
+            "error",
+            "environment_ready",
+        ] {
+            state[key] = self.state[key].clone();
+        }
+        let artifacts: serde_json::Map<String, Value> = self
+            .artifacts
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(role, value)| {
+                let mut receipt = artifact_summary(value);
+                receipt["path"] = json!(
+                    self.directory
+                        .join("artifacts")
+                        .join(format!("{role}.json"))
+                );
+                (role.clone(), receipt)
+            })
+            .collect();
+        json!({"state":state,"workspace":full["workspace"],"artifacts":artifacts,
+            "execution":execution_summary(&self.execution),"verdicts":artifact_summary(&json!({"verdicts":self.verdicts}))["verdicts"],
+            "allowed_stages":full["allowed_stages"],"stage_availability":full["stage_availability"],"recovery":full["recovery"],"budgets":full["budgets"],
+            "attempt_count":self.state["stages"].as_array().map(Vec::len),"directory":self.directory})
+    }
+
     pub(super) fn build_stage_inputs(&self, stage: &str, attempt: u64, instruction: &str) -> Value {
         let index = STAGES.iter().position(|role| *role == stage).unwrap();
         let mut artifacts = json!({});

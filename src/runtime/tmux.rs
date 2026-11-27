@@ -121,7 +121,22 @@ pub fn run_tui(
     )?;
     progress(&format!("Codex session: tmux attach-session -t {session}"));
     let deadline = Instant::now() + Duration::from_secs(timeout.saturating_add(20));
+    let run = directory
+        .parent()
+        .and_then(Path::parent)
+        .context("Missing run directory")?;
+    let mut monitor = super::policy::Monitor::new(directory.join("terminal.log"), true);
+    let mut dead_since = None;
     loop {
+        let finished = directory.join("finished").exists();
+        if super::policy::denial(run).is_none()
+            && let Some(reason) = monitor.check()?
+        {
+            super::policy::record(run, &directory.join("terminal.log"), reason)?;
+        }
+        if let Some(denial) = super::policy::denial(run) {
+            bail!("{}", denial["message"].as_str().unwrap_or("安全策略拒绝"));
+        }
         if directory.join("audit-finished").exists() {
             let saved = read_json(
                 &directory
@@ -143,7 +158,7 @@ pub fn run_tui(
         if process::interrupted() {
             bail!("Interrupted by user");
         }
-        if directory.join("finished").exists() {
+        if finished {
             let result = read_json(&directory.join("process.json"))?;
             bail!(
                 "Codex coordinator exited without calling finish (exit {}); see {}",
@@ -161,8 +176,12 @@ pub fn run_tui(
             ],
             5,
         );
-        if pane.returncode != 0 || pane.stdout.trim() == "1" {
+        if pane.returncode != 0 || pane.stdout.trim() != "0" {
             if directory.join("audit-finished").exists() || directory.join("finished").exists() {
+                continue;
+            }
+            if dead_since.get_or_insert_with(Instant::now).elapsed() < Duration::from_secs(1) {
+                thread::sleep(Duration::from_millis(20));
                 continue;
             }
             bail!(
@@ -562,8 +581,52 @@ fn tui_worker(directory: &Path, invocation: &serde_json::Value) -> Result<()> {
         &directory.join("process.json"),
         &serde_json::to_value(&result)?,
     )?;
+    let token = Uuid::new_v4().to_string();
+    print!("\x1b]777;AAQE-DRAIN={token}\x07");
+    std::io::stdout().flush()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while fs::read_to_string(directory.join("terminal.drained"))
+        .ok()
+        .as_deref()
+        != Some(&token)
+    {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "Terminal log did not drain before exit"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
     File::create(directory.join("finished"))?;
     Ok(())
+}
+
+pub fn terminal_log(path: &Path) -> Result<()> {
+    let mut output = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let mut input = std::io::stdin().lock();
+    let mut bytes = [0u8; 8192];
+    let mut tail = Vec::new();
+    loop {
+        let count = input.read(&mut bytes)?;
+        if count == 0 {
+            return Ok(());
+        }
+        output.write_all(&bytes[..count])?;
+        output.flush()?;
+        tail.extend_from_slice(&bytes[..count]);
+        let text = String::from_utf8_lossy(&tail);
+        if let Some((_, marker)) = text.rsplit_once("\x1b]777;AAQE-DRAIN=")
+            && let Some((token, _)) = marker.split_once('\x07')
+            && Uuid::parse_str(token).is_ok()
+        {
+            fs::write(path.with_extension("drained"), token)?;
+        }
+        if tail.len() > 128 {
+            tail.drain(..tail.len() - 128);
+        }
+    }
 }
 
 fn pump(

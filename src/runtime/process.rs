@@ -192,6 +192,13 @@ pub fn run_streamed(
 }
 
 pub fn run_stage_worker(directory: &Path) -> Result<ProcessResult> {
+    let input = crate::state::read_json(&directory.join("input.json"))?;
+    let run = input["artifact_directory"]
+        .as_str()
+        .map(Path::new)
+        .unwrap_or(directory);
+    let mut stdout = super::policy::Monitor::new(directory.join("stdout.log"), false);
+    let mut stderr = super::policy::Monitor::new(directory.join("stderr.log"), false);
     let mut child = Command::new(crate::runtime::tmux::executable()?)
         .arg("__stage-worker")
         .arg(directory)
@@ -202,6 +209,17 @@ pub fn run_stage_worker(directory: &Path) -> Result<ProcessResult> {
         .process_group(0)
         .spawn()?;
     loop {
+        if super::policy::denial(run).is_none() {
+            for monitor in [&mut stdout, &mut stderr] {
+                if let Some(reason) = monitor.check()? {
+                    super::policy::record(run, directory, reason)?;
+                    break;
+                }
+            }
+        }
+        if super::policy::denial(run).is_some() {
+            File::create(directory.join("cancel"))?;
+        }
         if interrupted() {
             File::create(directory.join("cancel"))?;
         }
@@ -211,9 +229,14 @@ pub fn run_stage_worker(directory: &Path) -> Result<ProcessResult> {
                 "Stage supervisor failed: {status}; see {}",
                 directory.display()
             );
-            return Ok(serde_json::from_value(crate::state::read_json(
-                &directory.join("process.json"),
-            )?)?);
+            let result =
+                serde_json::from_value(crate::state::read_json(&directory.join("process.json"))?)?;
+            for monitor in [&mut stdout, &mut stderr] {
+                if let Some(reason) = monitor.check()? {
+                    super::policy::record(run, directory, reason)?;
+                }
+            }
+            return Ok(result);
         }
         thread::sleep(Duration::from_millis(20));
     }

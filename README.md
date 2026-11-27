@@ -74,6 +74,8 @@ flowchart TD
 
 The coordinator chooses the next stage; Rust enforces dependencies, budgets, patch rules and evidence gates. Stages can be retried or revisited. Accepted upstream revisions invalidate current downstream artifacts and verdicts while preserving history. Audits finish only through the MCP `finish` operation. The outer command then returns and the coordinator TUI stays available.
 
+Stages read evidence on demand from their existing `input.json` and artifact directory. The coordinator receives compact receipts; MCP `status(section:...)` retrieves details, with `stage` selecting an artifact when `section=artifacts`. An explicit model/provider safety-policy denial stops the audit and its Codex processes immediately, records `policy-denial.json`, and reports the reason with status `blocked`. AAQE does not automatically retry or switch models after that denial.
+
 ## Quick start
 
 Run from the root of the Git project you want to inspect:

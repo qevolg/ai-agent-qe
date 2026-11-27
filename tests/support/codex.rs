@@ -62,6 +62,18 @@ fn coordinate(args: &[String], directory: &Path, settings: BTreeMap<&str, &str>)
         &json!({"stdin":io::stdin().is_terminal(),"stdout":io::stdout().is_terminal(),"stderr":io::stderr().is_terminal()}),
     );
     fs::write(directory.join("tui.pid"), std::process::id().to_string()).unwrap();
+    if flag(args, "--policy-coordinator") || flag(args, "--policy-fast-coordinator") {
+        println!(
+            "\x1b[31m■ This content can’t be shown\x1b[0m because it violates cybersecurity safety policies."
+        );
+        io::stdout().flush().unwrap();
+        if flag(args, "--policy-fast-coordinator") {
+            return;
+        }
+        thread::sleep(Duration::from_secs(30));
+        fs::write(directory.join("continued-after-policy"), "").unwrap();
+        return;
+    }
     assert_eq!(
         settings.get("mcp_servers.aaqe.default_tools_approval_mode"),
         Some(&"\"approve\"")
@@ -173,11 +185,33 @@ fn coordinate(args: &[String], directory: &Path, settings: BTreeMap<&str, &str>)
             let rerun = client.tool("execute_tests", json!({"test_ids":["negative-input"]}));
             assert_eq!(rerun["isError"], false, "{rerun}");
             assert_eq!(
-                rerun["structuredContent"]["execution"]["tests"][0]["junit"]["complete"],
+                client.tool("status", json!({"section":"execution"}))["structuredContent"]["data"]
+                    ["tests"][0]["junit"]["complete"],
                 true
             );
         }
         let result=client.tool("run_stage",json!({"stage":stage,"instruction":"Inspect current evidence and perform this role independently"}));
+        if (flag(args, "--policy-stage")
+            || flag(args, "--policy-provider")
+            || flag(args, "--policy-message-stage"))
+            && stage == "bug-hunter"
+        {
+            thread::sleep(Duration::from_secs(30));
+            fs::write(directory.join("continued-after-policy"), "").unwrap();
+        }
+        if stage == "code-explorer" && result["isError"] == false {
+            let status = client.tool("status", json!({}));
+            assert_eq!(
+                status["structuredContent"]["artifacts"][stage]["references"]["total"],
+                1
+            );
+            assert!(status["structuredContent"]["state"].get("stages").is_none());
+            let detailed = client.tool("status", json!({"section":"artifacts","stage":stage}));
+            assert_eq!(
+                detailed["structuredContent"]["data"][stage]["references"][0]["id"],
+                "source-1"
+            );
+        }
         if result["isError"] == true {
             client.tool(
                 "finish",
@@ -236,6 +270,33 @@ pub fn run(args: &[String]) {
     let stage = inputs["stage"]
         .as_str()
         .unwrap_or_else(|| directory.file_name().unwrap().to_str().unwrap());
+    if (flag(args, "--policy-stage")
+        || flag(args, "--policy-provider")
+        || flag(args, "--policy-message-stage"))
+        && stage == "bug-hunter"
+    {
+        save(
+            Path::new(argument(args, "--output-last-message")),
+            &json!({"summary":"must not accept","candidates":[],"excluded_areas":[]}),
+        );
+        if flag(args, "--policy-provider") {
+            eprintln!("401: token disabled for content policy violation");
+        } else if flag(args, "--policy-message-stage") {
+            println!(
+                "{}",
+                json!({"type":"turn.failed","error":{"message":"This request has been flagged for possible cybersecurity risk."}})
+            );
+        } else {
+            print!("{{\"type\":\"error\",\"codex_error_info\":\"cyber_");
+            io::stdout().flush().unwrap();
+            thread::sleep(Duration::from_millis(40));
+            println!("policy\",\"message\":\"blocked by cybersecurity policy\"}}");
+        }
+        io::stdout().flush().unwrap();
+        thread::sleep(Duration::from_secs(30));
+        fs::write(directory.join("continued-after-policy"), "").unwrap();
+        return;
+    }
     if flag(args, "--cancel-test") {
         let mut child = Command::new(env::current_exe().unwrap())
             .arg("idle")
