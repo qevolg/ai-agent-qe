@@ -196,6 +196,8 @@ Runner 必须是持续运行的容器。AAQE 自动为它增加：
 
 安装过程按 `environment/setup-<index>/<attempt>/` 保存进程记录和日志，失败结果携带证据目录及 stdout/stderr 摘要供主调度诊断。追加或替换配方会清除当前执行和 Validator 结论，历史 attempt 保留；安装、readiness 成功后重跑受影响测试，再独立验证。安装失败也保留配方和容器，允许在预算内纠正后继续。普通依赖缺失触发自动修复；凭据不可用、网络持续不可达、版本无法满足或预算耗尽时保存具体 blocked 原因。
 
+实际重新准备环境时（包括不传入新配方的失败重试）也会清除旧执行及验证结论。每条安装命令执行前保存 `environment/setup-in-progress.json`；失败或超时后停止本轮 Runner，终止容器内安装进程。停止操作使用独立的 10 秒恢复期限，结果保存在 `environment/setup-stop/`；若停止失败，恢复标记保留，拒绝继续探测或测试，下一次准备先恢复停止操作再启动。AAQE 在安装中退出后，也通过该标记恢复。普通测试命令需包含首次执行及重跑所需的 fixture 准备；`reproduction_commands` 仅补充独立复现的准备步骤。
+
 创建所有权快照前可修正环境定义。存在 `environment/ownership.json` 或环境已启动后，Compose 定义及初始设置锁定，即使启动或 readiness 失败也不能替换；容器内依赖修复通过上述顶层 `setup` 参数进行。对相同定义再次调用 `prepare_environment` 可恢复启动、安装和就绪检查；已 ready 且没有提交安装步骤时重复调用不再启动服务。需更换已拥有资源的 Compose 定义时保存本轮并新开审计。
 
 Designer 的 `blocked_reason` 表示缺少可靠 oracle 或无法实现测试。可实现但缺少服务、编译器等运行条件时，使用 `execution_blocked_reason`，Developer 仍可生成测试。独立的单元、集成与 E2E 场景使用不同 test ID。全部计划都因设计原因受阻时，Validator 可在没有 Developer 的情况下独立检查并给出 blocked 结论；可实现计划完成审计仍需要 Developer。

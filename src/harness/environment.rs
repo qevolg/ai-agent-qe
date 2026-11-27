@@ -210,6 +210,8 @@ impl AuditHarness<'_> {
             self.save()?;
             if self.state["environment_ready"] != true {
                 self.gate()?.verify_worktree()?;
+                self.invalidate(3)?;
+                self.save()?;
                 let runtime = (self.factory)(
                     &self.root()?,
                     &self.directory,

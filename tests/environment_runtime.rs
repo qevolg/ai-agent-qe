@@ -165,6 +165,43 @@ fn incorrect_installation_recipe_can_be_replaced_without_changing_compose() {
 }
 
 #[test]
+fn failed_installer_stop_blocks_runner_use_until_preparation_recovers() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let workspace = tempfile::tempdir().unwrap();
+    let run = tempfile::tempdir().unwrap();
+    let recovered = Arc::new(AtomicBool::new(false));
+    let ready = recovered.clone();
+    let runtime = ComposeEnvironment::new(workspace.path(), run.path(), "stop-recovery", json!({
+        "compose":{"services":{"runner":{"image":"fixture"}}}, "runner_service":"runner", "setup":[["install"]]
+    }), 5).with_executor(Arc::new(move |argv,_| {
+        let failed = !ready.load(Ordering::SeqCst) && argv.iter().any(|s| s == "exec" || s == "stop");
+        ProcessResult { argv:argv.to_vec(), returncode:if failed {124} else {0}, timed_out:failed,
+            stdout:if argv.iter().any(|s| s == "config") {r#"{"services":{"runner":{"image":"fixture"}}}"#.into()} else {String::new()},
+            stderr:String::new(), elapsed:0.0 }
+    }));
+    assert!(format!("{:#}", runtime.start().unwrap_err()).contains("interrupted installer"));
+    assert!(runtime.env_dir.join("setup-in-progress.json").exists());
+    assert!(
+        runtime
+            .inspect(&json!({"kind":"tools","tools":["python"]}), 3)
+            .unwrap_err()
+            .to_string()
+            .contains("recovery")
+    );
+    assert!(
+        runtime
+            .execute_test(&["test".into()], "test", 3)
+            .unwrap_err()
+            .to_string()
+            .contains("recovery")
+    );
+    recovered.store(true, Ordering::SeqCst);
+    runtime.start().unwrap();
+    assert!(!runtime.env_dir.join("setup-in-progress.json").exists());
+    assert!(runtime.env_dir.join("setup-stop").is_dir());
+}
+
+#[test]
 fn inline_compose_is_owned_outside_worktree_and_readiness_retries_reuse_snapshot() {
     let temp = tempfile::tempdir().unwrap();
     let workspace = temp.path().join("worktree");

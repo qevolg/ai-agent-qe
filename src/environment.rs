@@ -1,6 +1,6 @@
 use crate::{
     patchgate::safe_path,
-    process::{ProcessResult, run, save_result},
+    process::{ProcessResult, ignoring_interrupts, run, save_result},
     state::{absolute_path, read_json, write_json},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -131,6 +131,7 @@ impl ComposeEnvironment {
     }
 
     pub fn inspect(&self, probe: &Value, timeout: u64) -> Result<Value> {
+        self.ensure_no_pending_setup()?;
         let runner = self.spec["runner_service"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -147,6 +148,46 @@ impl ComposeEnvironment {
             &prefix,
             runner,
         )
+    }
+
+    fn ensure_no_pending_setup(&self) -> Result<()> {
+        ensure!(
+            !self.env_dir.join("setup-in-progress.json").exists(),
+            "An interrupted installer requires prepare_environment recovery before using the runner"
+        );
+        Ok(())
+    }
+
+    fn stop_pending_setup(&self) -> Result<()> {
+        let pending = self.env_dir.join("setup-in-progress.json");
+        if !pending.exists() {
+            return Ok(());
+        }
+        let mut argv = self.arguments(true)?;
+        argv.extend([
+            "stop".into(),
+            "--timeout".into(),
+            "1".into(),
+            self.spec["runner_service"]
+                .as_str()
+                .context("Missing runner service")?
+                .into(),
+        ]);
+        // Recovery must also run after Ctrl+C or expiry of the installation budget.
+        // A successful Docker stop terminates all processes inside this owned runner.
+        let result = ignoring_interrupts(|| (self.execute)(&argv, 10));
+        let evidence = self
+            .env_dir
+            .join("setup-stop")
+            .join(Uuid::new_v4().simple().to_string());
+        save_result(&result, &evidence)?;
+        ensure!(
+            result.returncode == 0 && !result.timed_out,
+            "Cannot stop interrupted installer; prepare_environment recovery required; evidence: {}",
+            evidence.display()
+        );
+        fs::remove_file(pending)?;
+        Ok(())
     }
     pub fn arguments(&self, resolved: bool) -> Result<Vec<String>> {
         let mut argv = vec![
@@ -276,6 +317,7 @@ impl ComposeEnvironment {
         } else {
             self.create_snapshot(runner, deadline)?;
         }
+        self.stop_pending_setup()?;
         let mut services = strings(&self.spec["services"]);
         if !services.iter().any(|s| s == runner) {
             services.push(runner.into());
@@ -302,7 +344,16 @@ impl ComposeEnvironment {
                     runner.into(),
                 ]);
                 install.extend(command.clone());
-                self.checked_until(&install, &format!("setup-{index}"), Some(deadline))?;
+                let pending = self.env_dir.join("setup-in-progress.json");
+                write_json(&pending, &json!({"command":command,"index":index}))?;
+                if let Err(error) =
+                    self.checked_until(&install, &format!("setup-{index}"), Some(deadline))
+                {
+                    self.stop_pending_setup()
+                        .with_context(|| format!("{error:#}"))?;
+                    return Err(error);
+                }
+                fs::remove_file(pending)?;
             }
         }
         argv.extend([
@@ -434,6 +485,7 @@ impl ComposeEnvironment {
         Ok(())
     }
     pub fn execute_test(&self, command: &[String], test_id: &str, timeout: u64) -> Result<Value> {
+        self.ensure_no_pending_setup()?;
         let attempt = Uuid::new_v4().simple().to_string();
         let directory = self.results.join(&attempt);
         fs::create_dir_all(&self.results)?;

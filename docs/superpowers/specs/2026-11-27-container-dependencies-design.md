@@ -10,6 +10,8 @@ The coordinator infers versions from repository evidence, chooses an appropriate
 
 Installing dependencies invalidates current execution and Validator conclusions while preserving historical attempts. A readiness failure still permits runner probes and further setup. Reproduction reruns the saved setup before test-specific preparation. Existing configurations and saved runs without setup remain readable.
 
+Every actual preparation retry invalidates current execution/validation before replay, including calls without a new recipe. Setup writes a pending marker before execution. Failed or interrupted installation stops only the owned runner, using a separate 10-second recovery allowance to terminate in-container processes. Failed stopping retains the marker and blocks probes/tests until preparation successfully recovers. Initial test commands must include required fixture preparation; reproduction_commands adds standalone-replay preparation only.
+
 Alternatives considered: documentation alone leaves the host-probe and recovery gaps; containerizing AAQE exceeds the explicitly confirmed scope. The chosen extension preserves the existing host runtime and test evidence gates.
 
 Acceptance includes setup ordering and failure recovery, immutable snapshot reuse, runner-scoped probes, append validation, stale verdict invalidation, replay, and a real Docker installation of a dependency absent from the runner. No new actual-model product audit or remote CI pass is implied by deterministic fixtures.

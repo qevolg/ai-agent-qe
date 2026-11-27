@@ -1,5 +1,58 @@
 # Validation
 
+## Container test dependency recovery — 2026-11-27
+
+AAQE and its control tools remain host processes. Project dependencies, builds,
+fixtures and tests execute in the owned Docker runner. Setup recipes install as
+container user 0 before health waiting/readiness; coordinator repairs need no
+operator installation approval. Tools/endpoint MCP probes default to the runner.
+Recipes, process evidence and recovery state are saved for retry and reproduction.
+
+Final local validation used Rust 1.96.0 and minimum-supported Rust 1.88.0,
+Docker Engine 29.6.1, Compose v5.3.0, tmux 3.4 and the Python 3.12 slim image.
+
+| Check | Result |
+|---|---|
+| Formatting and `git diff --check` | Passed |
+| Strict Clippy, all targets | Passed |
+| Complete ordinary suite, Rust 1.96.0 | 103 passed, zero failures; one opt-in Docker test ignored |
+| Complete ordinary suite, Rust 1.88.0 | 103 passed, zero failures; one opt-in Docker test ignored |
+| Opt-in real Docker workflow | Passed, file Compose and early inline Compose |
+| Release build | Passed |
+| Cargo package verification | Passed; packaged crate compiled |
+
+The real Docker fixture deliberately starts without a required Python package,
+records failed readiness, probes Python in the unready runner, creates an offline
+wheel and installs it using actual pip through the MCP setup operation. It then
+executes baseline/target tests, removes the runner, and reproduces after replaying
+the saved installation recipe in a new runner. Read-only source and writable
+result mounts, selected reruns, evidence preservation and owned cleanup remain
+covered. The fixture also executes a delayed installer under a short deadline,
+checks that its runner stops, and verifies that its delayed marker is absent after
+subsequent recovery/reproduction. No package mirror is needed for this regression.
+
+Independent read-only review found three Important issues: preparation retries
+could retain an obsolete Validator artifact, timed-out installers could survive
+the host Docker client, and a new fixture instruction described standalone replay
+preparation as if ordinary execution consumed it. The first two were reproduced
+by failing harness and real Docker tests, then corrected and verified with the
+green suites above. Every actual preparation retry invalidates execution and
+validation; a persisted installer marker enforces owned-runner stop recovery.
+A further regression covers failed stop blocking probes/tests until recovery.
+The Developer instruction now states that normal test commands include required
+fixture setup, with reproduction_commands reserved for additional CLI replay
+preparation. Review reported no Critical or Minor findings.
+
+The retained boundaries are project-provided Compose trust and existing general
+process capture for setup (probe output remains bounded). Complete replacement
+recipes must retain semantic prerequisites and remain independent of generated
+tests; arbitrary argv cannot establish those properties. Standalone reproduction
+preserves the original audit verdict and appends its own execution history.
+Readiness and installation recipes must tolerate replay.
+
+These checks use deterministic model fixtures, not a new actual-model business
+product audit. Local results do not establish a remote CI pass.
+
 ## Environment preparation and recoverable scheduling — 2026-11-26
 
 The harness supports recorded environment probes, inline Compose and runner readiness,

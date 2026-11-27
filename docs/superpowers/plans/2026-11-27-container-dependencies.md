@@ -46,5 +46,7 @@
 - [x] Implement MCP preparation, persisted recipes, readiness reset and Validator/execution invalidation; replay setup in reproduction.
 - [x] Update coordinator and stage instructions to infer, install, verify and retry without human approval.
 - [x] Extend real Docker coverage to install a genuinely absent package, repair after startup, probe the runner, recreate it and reproduce.
-- [ ] Run focused and full tests, formatting, strict Clippy, MSRV checks and real Docker validation; record actual results.
-- [ ] Obtain one independent whole-change review, address actionable findings, commit, fast-forward the original main checkout and push origin/main; verify the remote SHA.
+- [x] Run focused and full tests, formatting, strict Clippy, MSRV checks and real Docker validation; record actual results.
+- [x] Obtain one independent whole-change review and address actionable findings with regression verification.
+
+**Publication:** Commit the final corrections and validation record, fast-forward the original main checkout and push origin/main; verify the remote SHA.

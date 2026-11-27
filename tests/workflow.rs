@@ -547,6 +547,38 @@ fn real_docker_scenario(early_inline: bool) {
             &dir,
             &id,
             state["environment"].clone(),
+            2,
+        );
+        let saved = runtime.saved_setup().unwrap();
+        runtime.record_setup_with_replace(&[vec!["sh".into(), "-c".into(), "echo started > /aaqe-results/installer-started; sleep 8; echo leaked > /aaqe-results/installer-leaked".into()]], true).unwrap();
+        assert!(runtime.start().is_err());
+        assert!(
+            dir.join("executions/installer-started").exists(),
+            "setup never started"
+        );
+        let mut stopped = runtime.arguments(true).unwrap();
+        stopped.extend([
+            "ps".into(),
+            "--status".into(),
+            "running".into(),
+            "--quiet".into(),
+            "runner".into(),
+        ]);
+        let status = Command::new(&stopped[0])
+            .args(&stopped[1..])
+            .output()
+            .unwrap();
+        assert!(status.status.success());
+        assert!(
+            status.stdout.is_empty(),
+            "timed-out installer still has a running container"
+        );
+        runtime.record_setup_with_replace(&saved, true).unwrap();
+        let runtime = ComposeEnvironment::new(
+            Path::new(state["workspace"]["path"].as_str().unwrap()),
+            &dir,
+            &id,
+            state["environment"].clone(),
             120,
         );
         let argv = runtime.arguments(true).unwrap();
@@ -580,6 +612,9 @@ fn real_docker_scenario(early_inline: bool) {
     let records: Value = serde_json::from_slice(&replay.stdout).unwrap();
     assert_eq!(records[0]["junit"]["complete"], true);
     assert_eq!(records[0]["junit"]["cases"][0]["status"], "failed");
+    if early_inline {
+        assert!(!dir.join("executions/installer-leaked").exists());
+    }
     assert_ne!(
         records[0]["directory"],
         report["execution"]["tests"][0]["directory"]

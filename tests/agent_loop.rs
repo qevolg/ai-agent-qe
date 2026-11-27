@@ -880,6 +880,94 @@ fn readiness_failure_locks_owned_spec_and_retries_same_runner() {
 }
 
 #[test]
+fn saved_setup_retry_invalidates_validator_on_success_and_failure() {
+    use std::{cell::Cell, rc::Rc};
+    struct RetryAgent;
+    impl AuditAgent for RetryAgent {
+        fn invoke(
+            &self,
+            stage: &str,
+            w: &Path,
+            d: &Path,
+            i: &Value,
+            p: &dyn Fn(&str),
+        ) -> Result<Value> {
+            if stage == "test-validator" {
+                return Ok(
+                    json!({"summary":"blocked","verdicts":[{"candidate_id":"bug","test_ids":["test"],"status":"blocked","rationale":"installation failed","evidence":[]}]}),
+                );
+            }
+            Agent { mode: "normal" }.invoke(stage, w, d, i, p)
+        }
+        fn coordinate(&self, h: &mut AuditHarness<'_>) -> Result<()> {
+            for stage in [
+                "code-explorer",
+                "bug-hunter",
+                "test-designer",
+                "test-developer",
+            ] {
+                h.run_stage(stage, "inspect")?;
+            }
+            for expected in ["failed", "completed"] {
+                assert_eq!(
+                    h.run_stage("test-validator", "review blocked evidence")?["status"],
+                    "completed"
+                );
+                assert!(!h.status()["artifacts"]["test-validator"].is_null());
+                assert_eq!(h.prepare_environment(None)?["status"], expected);
+                assert!(h.status()["artifacts"]["test-validator"].is_null());
+                assert_eq!(h.status()["verdicts"], json!([]));
+            }
+            h.finish("blocked", "recovery invalidation verified")
+        }
+    }
+    struct RetryRuntime {
+        starts: Rc<Cell<usize>>,
+        runtime: Runtime,
+    }
+    impl TestRuntime for RetryRuntime {
+        fn start(&self) -> Result<()> {
+            let starts = self.starts.get() + 1;
+            self.starts.set(starts);
+            if starts <= 2 {
+                bail!("dependency installation failed");
+            }
+            Ok(())
+        }
+        fn logs(&self) -> Result<()> {
+            Ok(())
+        }
+        fn execute_test(&self, c: &[String], id: &str, t: u64) -> Result<Value> {
+            self.runtime.execute_test(c, id, t)
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = repository(temp.path());
+    let starts = Rc::new(Cell::new(0));
+    let config = Config {
+        state_dir: temp.path().join("runs"),
+        environment: json!({"setup":[["install"]]}),
+        ..Config::default()
+    };
+    run_audit_with(
+        "audit",
+        &root,
+        &config,
+        &RetryAgent,
+        &|_, d, _, _, _| {
+            Box::new(RetryRuntime {
+                starts: starts.clone(),
+                runtime: Runtime {
+                    root: d.join("executions"),
+                },
+            })
+        },
+        &|_| {},
+    )
+    .unwrap();
+}
+
+#[test]
 fn trusted_global_baseline_overrides_test_specific_prerequisites() {
     struct TrustedAgent;
     impl AuditAgent for TrustedAgent {
