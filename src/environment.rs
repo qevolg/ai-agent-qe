@@ -1,6 +1,6 @@
 use crate::{
     patchgate::safe_path,
-    process::{ProcessResult, ignoring_interrupts, run, save_result},
+    process::{ProcessResult, ignoring_interrupts, run, run_streamed, save_result},
     state::{absolute_path, read_json, write_json},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -23,7 +23,7 @@ pub struct ComposeEnvironment {
     pub env_dir: PathBuf,
     pub results: PathBuf,
     timeout: u64,
-    execute: Executor,
+    execute: Option<Executor>,
 }
 
 pub fn strings(value: &Value) -> Vec<String> {
@@ -74,12 +74,34 @@ impl ComposeEnvironment {
             project: format!("aaqe-{}", run_id.to_lowercase()),
             spec,
             timeout,
-            execute: Arc::new(|argv, timeout| run(argv, None, timeout, None)),
+            execute: None,
         }
     }
     pub fn with_executor(mut self, execute: Executor) -> Self {
-        self.execute = execute;
+        self.execute = Some(execute);
         self
+    }
+
+    fn execute_saved(
+        &self,
+        argv: &[String],
+        timeout: u64,
+        directory: &Path,
+        stream: bool,
+    ) -> Result<ProcessResult> {
+        if self.execute.is_none() && stream {
+            return run_streamed(argv, None, timeout, None, directory);
+        }
+        let result = self.execute_complete(argv, timeout);
+        save_result(&result, directory)?;
+        Ok(result)
+    }
+
+    fn execute_complete(&self, argv: &[String], timeout: u64) -> ProcessResult {
+        match &self.execute {
+            Some(execute) => execute(argv, timeout),
+            None => run(argv, None, timeout, None),
+        }
     }
 
     pub fn record_setup(&self, commands: &[Vec<String>]) -> Result<()> {
@@ -175,12 +197,11 @@ impl ComposeEnvironment {
         ]);
         // Recovery must also run after Ctrl+C or expiry of the installation budget.
         // A successful Docker stop terminates all processes inside this owned runner.
-        let result = ignoring_interrupts(|| (self.execute)(&argv, 10));
         let evidence = self
             .env_dir
             .join("setup-stop")
             .join(Uuid::new_v4().simple().to_string());
-        save_result(&result, &evidence)?;
+        let result = ignoring_interrupts(|| self.execute_saved(&argv, 10, &evidence, true))?;
         ensure!(
             result.returncode == 0 && !result.timed_out,
             "Cannot stop interrupted installer; prepare_environment recovery required; evidence: {}",
@@ -273,12 +294,16 @@ impl ComposeEnvironment {
             self.timeout
         };
         ensure!(timeout > 0, "Environment operation time budget exhausted");
-        let result = (self.execute)(argv, timeout.min(self.timeout));
         let evidence = self
             .env_dir
             .join(label)
             .join(Uuid::new_v4().simple().to_string());
-        save_result(&result, &evidence)?;
+        let result = self.execute_saved(
+            argv,
+            timeout.min(self.timeout),
+            &evidence,
+            label != "config" && !label.starts_with("external-"),
+        )?;
         ensure!(
             result.returncode == 0,
             "Docker {label} failed (exit {}); environment retained; evidence: {}\nstdout: {}\nstderr: {}",
@@ -507,8 +532,7 @@ impl ComposeEnvironment {
                 .iter()
                 .map(|part| part.replace("{result_dir}", &result_dir)),
         );
-        let result = (self.execute)(&argv, timeout);
-        save_result(&result, &directory)?;
+        let result = self.execute_saved(&argv, timeout, &directory, true)?;
         let evidence =
             json!({"test_id":test_id,"attempt":attempt,"directory":directory,"result":result});
         write_json(&directory.join("execution.json"), &evidence)?;
@@ -522,7 +546,7 @@ impl ComposeEnvironment {
             "--format".into(),
             "json".into(),
         ]);
-        Ok((self.execute)(&argv, 30))
+        Ok(self.execute_complete(&argv, 30))
     }
     pub fn logs(&self) -> Result<()> {
         let mut argv = self.arguments(true)?;

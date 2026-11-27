@@ -2,6 +2,45 @@ use aaqe::{config::Config, contracts, gitops, process, state::Store};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 
+#[test]
+fn stage_logs_keep_full_output_on_disk_with_bounded_head_and_tail_in_process_records() {
+    let temp = tempfile::tempdir().unwrap();
+    let command = vec!["python3".into(), "-c".into(), "import sys; sys.stdout.buffer.write(b'BEGIN\\n'+b'x'*2000000+b'\\nEND'); sys.stderr.buffer.write(b'ERROR-BEGIN\\n'+b'y'*2000000+b'\\nERROR-END')".into()];
+    let result = process::run_logged(&command, temp.path(), 10, "", temp.path()).unwrap();
+    assert_eq!(result.returncode, 0);
+    assert!(result.stdout.len() < 70000 && result.stderr.len() < 70000);
+    assert!(result.stdout.starts_with("BEGIN\n") && result.stdout.ends_with("\nEND"));
+    assert!(result.stderr.starts_with("ERROR-BEGIN\n") && result.stderr.ends_with("\nERROR-END"));
+    assert!(result.stdout.contains(process::OUTPUT_TRUNCATED.trim()));
+    assert_eq!(
+        fs::metadata(temp.path().join("stdout.log")).unwrap().len(),
+        2_000_010
+    );
+    assert_eq!(
+        fs::metadata(temp.path().join("stderr.log")).unwrap().len(),
+        2_000_022
+    );
+    let saved = aaqe::state::read_json(&temp.path().join("process.json")).unwrap();
+    assert_eq!(saved["stdout"], result.stdout);
+}
+
+#[test]
+fn streamed_binary_output_stays_bounded_after_lossy_utf8_conversion() {
+    let temp = tempfile::tempdir().unwrap();
+    let command = vec![
+        "python3".into(),
+        "-c".into(),
+        "import sys; sys.stdout.buffer.write(bytes([255])*60000)".into(),
+    ];
+    let result = process::run_logged(&command, temp.path(), 10, "", temp.path()).unwrap();
+    assert_eq!(result.returncode, 0);
+    assert!(result.stdout.len() < 70000);
+    assert_eq!(
+        fs::read(temp.path().join("stdout.log")).unwrap(),
+        vec![255; 60000]
+    );
+}
+
 fn git(directory: &Path, arguments: &[&str]) -> String {
     gitops::git(directory, arguments).unwrap()
 }

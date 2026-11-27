@@ -91,18 +91,39 @@ pub const OUTPUT_TRUNCATED: &str = "\n[output truncated]";
 struct Capture {
     logs: Option<(File, File)>,
     limit: Option<usize>,
+    tail: bool,
 }
 
 #[derive(Default)]
 struct PipeOutput {
     bytes: Vec<u8>,
+    tail: Vec<u8>,
     truncated: bool,
 }
 
 impl PipeOutput {
     fn text(self, limit: Option<usize>) -> String {
-        let mut text = String::from_utf8_lossy(&self.bytes).into_owned();
+        let mut bytes = self.bytes;
         let mut truncated = self.truncated;
+        if !self.tail.is_empty() {
+            if truncated {
+                let mut head = String::from_utf8_lossy(&bytes).into_owned();
+                let tail = String::from_utf8_lossy(&self.tail);
+                let half = limit.unwrap_or(65536) / 2;
+                let mut end = head.len().min(half);
+                while !head.is_char_boundary(end) {
+                    end -= 1;
+                }
+                head.truncate(end);
+                let mut start = tail.len().saturating_sub(half);
+                while !tail.is_char_boundary(start) {
+                    start += 1;
+                }
+                return format!("{head}{OUTPUT_TRUNCATED}{}", &tail[start..]);
+            }
+            bytes.extend(self.tail);
+        }
+        let mut text = String::from_utf8_lossy(&bytes).into_owned();
         if let Some(limit) = limit.filter(|limit| text.len() > *limit) {
             let mut end = limit;
             while !text.is_char_boundary(end) {
@@ -134,24 +155,38 @@ pub fn run_logged(
     input: &str,
     directory: &Path,
 ) -> Result<ProcessResult> {
+    let result = run_streamed(argv, Some(cwd), timeout, Some(input), directory)?;
+    File::create(directory.join("finished"))?;
+    Ok(result)
+}
+
+/// Stream complete output to disk and retain at most 64 KiB per stream in memory.
+pub fn run_streamed(
+    argv: &[String],
+    cwd: Option<&Path>,
+    timeout: u64,
+    input: Option<&str>,
+    directory: &Path,
+) -> Result<ProcessResult> {
+    fs::create_dir_all(directory)?;
     let logs = (
         File::create(directory.join("stdout.log"))?,
         File::create(directory.join("stderr.log"))?,
     );
     let result = run_inner(
         argv,
-        Some(cwd),
+        cwd,
         timeout,
-        Some(input),
+        input,
         &[],
         true,
         Capture {
             logs: Some(logs),
-            limit: None,
+            limit: Some(65536),
+            tail: true,
         },
     );
-    save_result(&result, directory)?;
-    File::create(directory.join("finished"))?;
+    save_process_record(&result, directory)?;
     Ok(result)
 }
 
@@ -276,6 +311,7 @@ pub fn run_env_bounded(
         Capture {
             logs: None,
             limit: Some(limit),
+            tail: false,
         },
     )
 }
@@ -294,6 +330,7 @@ fn read_pipe(
     sender: mpsc::Sender<PipeOutput>,
     mut log: Option<File>,
     limit: Option<usize>,
+    tail: bool,
 ) {
     thread::spawn(move || {
         let mut output = PipeOutput::default();
@@ -306,12 +343,21 @@ fn read_pipe(
             let retained = count.min(
                 limit
                     .unwrap_or(usize::MAX)
+                    .checked_div(if tail { 2 } else { 1 })
+                    .unwrap()
                     .saturating_sub(output.bytes.len()),
             );
             output.bytes.extend_from_slice(&buffer[..retained]);
-            output.truncated |= retained < count;
+            if tail {
+                output.tail.extend_from_slice(&buffer[retained..count]);
+                let excess = output.tail.len().saturating_sub(limit.unwrap_or(65536) / 2);
+                output.truncated |= excess > 0;
+                output.tail.drain(..excess);
+            } else {
+                output.truncated |= retained < count;
+            }
             if let Some(log) = &mut log {
-                let _ = log.write_all(&buffer[..retained]);
+                let _ = log.write_all(&buffer[..if tail { count } else { retained }]);
                 let _ = log.flush();
             }
         }
@@ -381,12 +427,14 @@ fn run_inner(
         stdout_send,
         stdout_log,
         capture.limit,
+        capture.tail,
     );
     read_pipe(
         child.stderr.take().expect("piped stderr"),
         stderr_send,
         stderr_log,
         capture.limit,
+        capture.tail,
     );
     let mut stdout = None;
     let mut stderr = None;
@@ -460,10 +508,17 @@ pub fn save_result(result: &ProcessResult, directory: &Path) -> Result<()> {
     fs::create_dir_all(directory)?;
     fs::write(directory.join("stdout.log"), &result.stdout)?;
     fs::write(directory.join("stderr.log"), &result.stderr)?;
-    write_json(
-        &directory.join("process.json"),
-        &serde_json::to_value(result)?,
-    )
+    save_process_record(result, directory)
+}
+
+fn save_process_record(result: &ProcessResult, directory: &Path) -> Result<()> {
+    let mut document = serde_json::to_value(result)?;
+    document["stdout_path"] = serde_json::json!(directory.join("stdout.log"));
+    document["stderr_path"] = serde_json::json!(directory.join("stderr.log"));
+    document["output_truncated"] = serde_json::json!(
+        result.stdout.contains(OUTPUT_TRUNCATED) || result.stderr.contains(OUTPUT_TRUNCATED)
+    );
+    write_json(&directory.join("process.json"), &document)
 }
 
 #[cfg(test)]
@@ -479,6 +534,7 @@ mod tests {
             sender,
             None,
             Some(65536),
+            false,
         );
         let output = receiver.recv().unwrap();
         assert_eq!(output.bytes.len(), 65536);

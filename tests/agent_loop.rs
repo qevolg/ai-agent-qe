@@ -194,6 +194,23 @@ impl AuditAgent for Agent {
         _: &dyn Fn(&str),
     ) -> Result<Value> {
         let retry = inputs["attempt"].as_u64().unwrap() > 1;
+        assert!(
+            inputs["previous_attempts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["status"] != "running")
+        );
+        if stage == "code-explorer" {
+            assert!(
+                inputs["artifacts"].as_object().unwrap().is_empty(),
+                "Explorer must receive scope feedback without unrelated complete artifacts"
+            );
+        }
+        if stage == "bug-hunter" {
+            assert!(inputs["artifacts"].get("code-explorer").is_some());
+            assert!(inputs["artifacts"].get("test-developer").is_none());
+        }
         if stage == "test-developer" && retry {
             assert!(!inputs["execution"]["tests"].as_array().unwrap().is_empty());
             assert!(inputs["instruction"].as_str().unwrap().contains("feedback"));

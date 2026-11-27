@@ -223,6 +223,7 @@ pub fn serve(directory: &Path) -> Result<()> {
                         true,
                     ),
                 };
+                let value = crate::harness::evidence_view(&value);
                 json!({"result":{"content":[{"type":"text","text":serde_json::to_string(&value)?}],"structuredContent":value,"isError":error}})
             }
             _ => json!({"error":{"code":-32601,"message":"Method not found"}}),

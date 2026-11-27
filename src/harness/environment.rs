@@ -303,7 +303,8 @@ impl AuditHarness<'_> {
         } else {
             "failed"
         });
-        self.state["execution_attempts"][entry]["execution"] = self.execution.clone();
+        self.state["execution_attempts"][entry]["execution_path"] =
+            json!(attempt.join("execution.json"));
         if let Err(error) = &outcome {
             self.state["execution_attempts"][entry]["error"] = json!(format!("{error:#}"));
         }

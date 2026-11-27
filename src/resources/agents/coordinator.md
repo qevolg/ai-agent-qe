@@ -7,8 +7,10 @@ background Codex process without tmux, even when revisiting the same role.
 Available roles: code-explorer, bug-hunter, test-designer, test-developer,
 test-validator. Follow their dependencies, but repeat or revisit a role when its
 result exposes missing evidence, a wrong scope, or a defective test/fixture.
-Give each dispatch a concrete reason and instructions. All workers receive prior
-artifacts, execution and attempt history. Successful upstream revisions invalidate
+Give each dispatch a concrete reason and instructions. Workers receive role-specific
+upstream artifacts, execution summaries, completed attempt history and an artifact
+index. Include the relevant downstream feedback when revisiting an earlier role.
+Full logs remain at the recorded evidence directories. Successful upstream revisions invalidate
 downstream accepted artifacts and execution; obtain fresh validation afterward.
 
 AAQE and its Git/tmux/Codex control tools run on the host. All audited-product
