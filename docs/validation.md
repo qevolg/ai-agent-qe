@@ -14,6 +14,7 @@
 | 最低支持版本（Rust 1.88.0） | 通过 | 同样 118 项通过、零失败；严格 Clippy、Release 与发布包编译均通过 |
 | 真实 Docker 流程 | 通过 | 1 项显式启用测试同时覆盖文件 Compose 和 early inline Compose，模型输出使用确定性夹具 |
 | 文档与配置 | 通过 | 9 个帮助入口及多层 help；19 个相对链接；两种语言的 Mermaid 架构图；配置示例实际加载并通过 doctor |
+| 独立只读审查 | 通过 | 审查 `03ae3a1..81fa332`，Critical、Important、Minor 均无；真实模型质量、其他宿主平台和远程 CI 另列验证边界 |
 | MIT 与发布包 | 通过 | Cargo 声明 `license = "MIT"`；发布包包含 LICENSE、双语 README、配置模板和运行参考文档 |
 
 ### 验证结论
@@ -57,7 +58,7 @@ cargo test --locked --test workflow real_docker_workflow_reproduction_and_owned_
 
 ### 问题记录
 
-验证阶段未发现阻断交付的问题。编号与创建时间的取时已统一。MIT 授权使用标准文本，版权署名为当前仓库所有者 `qevolg`。
+验证阶段未发现阻断交付的问题。独立只读审查结论为可以合入，无 Critical、Important 或 Minor 发现；审查者没有重复执行实施方的测试。编号与创建时间的取时已统一。MIT 授权使用标准文本，版权署名为当前仓库所有者 `qevolg`。
 
 ### 验证路径调整
 
@@ -65,7 +66,7 @@ cargo test --locked --test workflow real_docker_workflow_reproduction_and_owned_
 
 ### 验证限制
 
-本轮没有执行新的真实模型业务产品审计；确定性模型夹具验证的是调度、执行、持久化与资源管理。自然语言采用中文通过提示词约束，历史文本与原始证据不自动翻译。本地检查通过与远程 CI 状态分别记录，不能据此认定 GitHub Actions 已通过。
+本轮没有执行新的真实模型业务产品审计；确定性模型夹具验证的是调度、执行、持久化与资源管理。自然语言采用中文通过提示词约束，历史文本与原始证据不自动翻译。本次没有新增原生 Windows 或 macOS 支持，运行范围仍为 Linux／WSL2。本地检查通过与远程 CI 状态分别记录，不能据此认定 GitHub Actions 已通过。
 
 ### 环境保留与再次验证
 

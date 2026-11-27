@@ -53,4 +53,4 @@
 - [x] Create aligned READMEs with Mermaid architecture, install/quick start, complete CLI/options, YAML fields/defaults/path precedence, report semantics and lifecycle; preserve advanced reference in runtime document.
 - [x] Add parseable annotated example and MIT license, update package metadata; verify help, relative links, example loading and package contents.
 - [x] Run formatting, strict Clippy and all tests, opt-in real Docker workflow, Rust 1.88 checks, release/package verification; write Chinese validation evidence.
-- [ ] Review full diff independently, address material findings, commit and publish to remote, verify remote SHA and report CI separately.
+- [x] Review full diff independently, address material findings, commit and publish to remote, verify remote SHA and report CI separately.
