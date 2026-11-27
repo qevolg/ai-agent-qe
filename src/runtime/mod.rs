@@ -1,4 +1,5 @@
 pub mod compose;
+pub mod executor;
 pub mod git;
 pub(crate) mod policy;
 pub mod probe;

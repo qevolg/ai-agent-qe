@@ -122,6 +122,7 @@ pub fn generate_report(
         .collect();
     let document = json!({
         "schema_version":"1.0","run_id":state["id"],"generated_at":now(),"prompt":state["prompt"],"status":state["status"],"error":state["error"],
+        "executor":state["executor"],"executor_history":state["executor_history"],"resume_round":state["resume_round"],"resume_from_stage":state["resume_from_stage"],"resume_checkpoints":directory.join("resumes"),
         "workspace":state["workspace"],"publication":state["publication"],"coverage":execution["coverage"],"coverage_assessment":artifacts["test-validator"]["coverage_assessment"],"stages":state["stages"],"finish_reason":state["finish_reason"],"coordinator":{"directory":directory.join("stages/coordinator"),"tool_log":directory.join("stages/coordinator/tools.jsonl")},"scope":array(&artifacts["code-explorer"]["scope"]),"uncertainties":array(&artifacts["code-explorer"]["uncertainties"]),
         "excluded_areas":array(&artifacts["bug-hunter"]["excluded_areas"]),"candidates":candidates,"verdicts":verdicts,"execution":execution,"environment":state["environment"],
         "candidate_results":candidate_results,"environment_started":state["environment_started"].as_bool().unwrap_or(false),"environment_ready":state["environment_ready"].as_bool().unwrap_or(false),

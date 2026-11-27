@@ -286,7 +286,9 @@ fn start_session(
         "exec {} TMUX=\"$TMUX\" TMUX_PANE=\"$TMUX_PANE\" {}",
         shell_join(&environment),
         shell_join(&[
-            executable()?.display().to_string(),
+            super::executor::for_directory(directory)?
+                .display()
+                .to_string(),
             "__tmux-worker".to_owned(),
             directory.display().to_string()
         ])
@@ -477,7 +479,11 @@ fn tui_worker(directory: &Path, invocation: &serde_json::Value) -> Result<()> {
     File::create(directory.join("terminal.log"))?;
     let log_command = format!(
         "exec {} __terminal-log {}",
-        quoted(&executable()?.display().to_string()),
+        quoted(
+            &super::executor::for_directory(directory)?
+                .display()
+                .to_string()
+        ),
         quoted(&directory.join("terminal.log").display().to_string())
     );
     let logging = tmux(&["pipe-pane", "-o", "-t", &pane, &log_command], 5);
@@ -525,9 +531,28 @@ fn tui_worker(directory: &Path, invocation: &serde_json::Value) -> Result<()> {
                         .code()
                         .unwrap_or_else(|| -status.signal().unwrap_or(1));
                 }
-                if !directory.join("audit-finished").exists()
-                    && started.elapsed() >= Duration::from_secs(timeout)
-                {
+                let expired = directory
+                    .parent()
+                    .and_then(Path::parent)
+                    .and_then(|run| read_json(&run.join("harness.json")).ok())
+                    .and_then(|saved| {
+                        if saved["state"]["status"] != "running" {
+                            return Some(false);
+                        }
+                        let start = chrono::DateTime::parse_from_rfc3339(
+                            saved["state"]["loop_started_at"].as_str()?,
+                        )
+                        .ok()?;
+                        let limit = saved["state"]["config"]["run_timeout"].as_u64()?;
+                        Some(
+                            chrono::Utc::now()
+                                .signed_duration_since(start)
+                                .num_seconds()
+                                >= limit as i64,
+                        )
+                    })
+                    .unwrap_or_else(|| started.elapsed() >= Duration::from_secs(timeout));
+                if !directory.join("audit-finished").exists() && expired {
                     timed_out = true;
                 }
                 if termination.is_none()
@@ -783,5 +808,98 @@ pub fn worker(directory: &Path) -> Result<()> {
         directory.display()
     );
     File::create(directory.join("finished"))?;
+    Ok(())
+}
+
+pub fn live_coordinator(directory: &Path) -> Result<Option<String>> {
+    let coordinator = directory.join("stages/coordinator");
+    if coordinator.join("finished").exists() {
+        return Ok(None);
+    }
+    for (session, stage) in owned_sessions(directory)? {
+        if stage
+            == coordinator
+                .canonicalize()
+                .unwrap_or_else(|_| coordinator.clone())
+        {
+            let pane = tmux(
+                &[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    &format!("={session}:"),
+                    "#{pane_dead}",
+                ],
+                5,
+            );
+            if pane.returncode == 0 && pane.stdout.trim() == "0" {
+                return Ok(Some(session));
+            }
+        }
+    }
+    Ok(None)
+}
+
+pub fn notify_coordinator(session: &str, instruction: &Path) -> Result<()> {
+    ensure_session(session)?;
+    let buffer = format!("aaqe-resume-{}", uuid::Uuid::new_v4().simple());
+    // A private named buffer avoids the user's clipboard and shell interpolation.
+    let loaded = tmux(
+        &[
+            "load-buffer",
+            "-b",
+            &buffer,
+            instruction.to_str().context("Invalid instruction path")?,
+        ],
+        5,
+    );
+    anyhow::ensure!(
+        loaded.returncode == 0,
+        "Cannot load resume instruction: {}",
+        loaded.stderr
+    );
+    let target = format!("={session}:");
+    let pasted = tmux(
+        &["paste-buffer", "-d", "-p", "-b", &buffer, "-t", &target],
+        5,
+    );
+    let _ = tmux(&["delete-buffer", "-b", &buffer], 5);
+    anyhow::ensure!(
+        pasted.returncode == 0,
+        "Cannot deliver resume instruction: {}",
+        pasted.stderr
+    );
+    let sent = tmux(&["send-keys", "-t", &target, "Enter"], 5);
+    anyhow::ensure!(
+        sent.returncode == 0,
+        "Cannot submit resume instruction: {}",
+        sent.stderr
+    );
+    Ok(())
+}
+
+fn ensure_session(session: &str) -> Result<()> {
+    anyhow::ensure!(
+        session_pattern()?.is_match(session),
+        "Invalid coordinator session"
+    );
+    Ok(())
+}
+
+pub fn retire_dead_coordinator(directory: &Path) -> Result<()> {
+    anyhow::ensure!(
+        live_coordinator(directory)?.is_none(),
+        "Coordinator is still alive"
+    );
+    for (session, stage) in owned_sessions(directory)? {
+        if stage == directory.join("stages/coordinator").canonicalize()? {
+            let result = tmux(&["kill-session", "-t", &format!("={session}")], 5);
+            anyhow::ensure!(
+                result.returncode == 0,
+                "Cannot retire dead coordinator: {}",
+                result.stderr
+            );
+        }
+    }
     Ok(())
 }

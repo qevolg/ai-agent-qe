@@ -110,3 +110,28 @@ Production modules live under `src/`; roles and schemas under `resources/`; inte
 Release tags `vVERSION` build Linux x86_64 musl archives and mandatory SHA-256 files. Publish a Release before recommending the binary installer to users. Source installation works independently.
 
 Test patches may contain tests in any repository path, including inline source tests. Developer and independent Validator enforce the test-only rule. AAQE checks safe paths, the recorded Git base and exact accepted-patch integrity before and after execution and publication.
+
+## Resume and executor lifecycle
+
+`aaqe resume --run-dir DIR [--from-stage STAGE] [--takeover]` reads the saved Run,
+not a configuration file in the caller's directory. Stage values are the five role
+names; coordinator is deliberately excluded. Reuse the original tmux conversation
+when available. `resume` is also a harness tool for explicit user continuation in
+that conversation. Concurrent mutations are rejected by the Run operation lock.
+
+Checkpoints before invalidation live under `resumes/NNNN/`; stage attempts retain
+their original paths and monotonically increasing numbers. Fresh stage/operation
+budget offsets and a fresh active timeout are recorded for each round. Revisit an
+upstream role to invalidate downstream results, rather than editing state files.
+The same Git base and exact accepted patch must still match. Cleaned environments
+and terminal policy refusals require a new audit. `finish` finalizes reports and
+publication even when the original outer command has already returned.
+
+`state.executor` records the immutable path, version, SHA-256 and relay protocol.
+Normal resume invokes that saved executor. `--takeover` explicitly copies the
+installed compatible executor to a new runtime subdirectory and records history;
+old copies are never overwritten. New relays dispatch each request through the
+active snapshot, preserving the interactive conversation. A live legacy MCP needs
+the terminal bridge described in the generated resume instruction. Linux snapshots
+read `/proc/self/exe`, preserving the actual running inode after an atomic install.
+No executor paths, hashes or recovery offsets belong in user YAML.

@@ -22,6 +22,7 @@ use std::{
 
 mod environment;
 mod inputs;
+mod resume;
 pub(crate) use inputs::{execution_summary, tool_view};
 
 pub struct AuditHarness<'a> {
@@ -59,6 +60,7 @@ impl<'a> AuditHarness<'a> {
 
     pub fn reload(&mut self) -> Result<()> {
         let saved = HarnessSnapshot::load(&self.directory)?;
+        self.config = serde_json::from_value(saved.state["config"].clone())?;
         self.state = saved.state;
         self.artifacts = saved.artifacts;
         self.execution = saved.execution;
@@ -206,13 +208,19 @@ impl<'a> AuditHarness<'a> {
         let entries = self.state["stages"]
             .as_array()
             .context("Missing stage history")?;
+        let offset = self.state["round_offsets"]["stages"].as_u64().unwrap_or(0) as usize;
         ensure!(
-            (entries.len() as u64) < self.config.max_stage_calls,
+            (entries.len().saturating_sub(offset) as u64) < self.config.max_stage_calls,
             "Stage call budget exhausted"
         );
         let attempt = entries.iter().filter(|e| e["name"] == stage).count() as u64 + 1;
         ensure!(
-            attempt <= self.config.max_stage_attempts,
+            (entries
+                .iter()
+                .skip(offset)
+                .filter(|e| e["name"] == stage)
+                .count() as u64)
+                < self.config.max_stage_attempts,
             "Stage attempt budget exhausted for {stage}"
         );
         let elapsed = chrono::Utc::now()
@@ -245,6 +253,14 @@ impl<'a> AuditHarness<'a> {
                 return Err(error);
             }
         };
+        if stage == "test-validator" && self.state["resume_requires_execution"] == true {
+            let result = self.execute_tests(None)?;
+            ensure!(
+                result["status"] == "completed",
+                "Resumed validation requires fresh execution: {}",
+                result["error"]
+            );
+        }
         let mut directory = self.directory.join("stages").join(stage);
         if attempt > 1 {
             directory = directory.join("attempts").join(format!("{attempt:04}"));
@@ -525,6 +541,85 @@ impl<'a> AuditHarness<'a> {
         Ok(())
     }
 
+    /// Caller holds RunLock; persistent MCP finish must not depend on the outer CLI.
+    pub fn finalize(&mut self) -> Result<()> {
+        if self.state["audit_finalized"] == true {
+            crate::reporting::refresh_report(&self.directory, &self.state)?;
+            return Ok(());
+        }
+        let id = self.state["id"]
+            .as_str()
+            .context("Missing run identity")?
+            .to_owned();
+        let recovery = self
+            .recover_baseline()
+            .and_then(|()| self.recover_transition());
+        if let Err(error) = recovery {
+            self.state["status"] = json!("blocked");
+            self.state["recovery_error"] = json!(format!("{error:#}"));
+            self.state["error"] = json!(format!("Patch recovery failed: {error:#}"));
+            for verdict in self.verdicts.as_array_mut().unwrap() {
+                verdict["agent_status"] = verdict["status"].clone();
+                verdict["status"] = json!("blocked");
+                verdict["rationale"] = json!(
+                    "Patch recovery failed; retained historical evidence does not establish the current worktree result"
+                );
+            }
+        }
+        if interrupted() {
+            self.state["status"] = json!("interrupted");
+        }
+        if let Some(denial) = crate::runtime::policy::denial(&self.directory) {
+            self.state["status"] = json!("blocked");
+            self.state["error"] = denial["message"].clone();
+        }
+        for entry in self.state["stages"].as_array_mut().unwrap() {
+            if entry["status"] == "running" {
+                entry["status"] = json!("failed");
+                entry["finished_at"] = json!(now());
+            }
+        }
+        self.state["stage"] = json!(6);
+        self.state["finished_at"] = json!(now());
+        self.state["audit_finalized"] = json!(true);
+        self.save()?;
+        if self.artifacts["test-developer"]["patch"]
+            .as_str()
+            .is_some_and(|patch| !patch.trim().is_empty())
+            && self.state["status"] != "interrupted"
+            && crate::runtime::policy::denial(&self.directory).is_none()
+        {
+            if let Err(error) = crate::runtime::publication::publish(
+                &self.directory,
+                &mut self.state,
+                &self.artifacts,
+                &self.execution,
+                &self.config,
+            ) {
+                (self.progress)(&format!(
+                    "Test publication failed: {error:#}; retry with aaqe publish {id}"
+                ));
+            }
+            self.save()?;
+            if let Some(url) = self.state["publication"]["mr_url"].as_str() {
+                (self.progress)(&format!("GitLab MR: {url}"));
+            }
+        }
+        generate_report(
+            &self.directory,
+            &self.state,
+            &self.artifacts,
+            &self.execution,
+            &self.verdicts,
+        )?;
+        (self.progress)(&format!(
+            "{}; report: {}",
+            self.state["status"].as_str().unwrap(),
+            self.directory.join("report.md").display()
+        ));
+        Ok(())
+    }
+
     pub fn finish(&mut self, status: &str, reason: &str) -> Result<()> {
         ensure!(
             crate::runtime::policy::denial(&self.directory).is_none(),
@@ -584,7 +679,8 @@ impl<'a> AuditHarness<'a> {
         if status == "blocked" {
             self.state["error"] = json!(reason);
         }
-        self.save()
+        self.save()?;
+        self.finalize()
     }
 }
 
@@ -614,6 +710,8 @@ pub fn audit(
     };
     harness.state["environment_retained"] = json!(false);
     harness.state["audit_finalized"] = json!(false);
+    harness.state["executor"] = crate::runtime::executor::capture(&harness.directory)?;
+    harness.state["mcp_relay_protocol"] = json!(1);
     harness.save()?;
     let outcome = (|| -> Result<()> {
         progress(&format!(
@@ -638,6 +736,9 @@ pub fn audit(
     })();
     let _lock = RunLock::wait(&harness.directory)?;
     harness.reload()?;
+    if harness.state["resume_round"].as_u64().unwrap_or(0) != 0 {
+        return Ok(harness.state);
+    }
     if let Err(error) = outcome {
         harness.state["status"] = json!(if interrupted() {
             "interrupted"
@@ -648,71 +749,6 @@ pub fn audit(
         });
         harness.state["error"] = json!(format!("{error:#}"));
     }
-    let recovery = harness
-        .recover_baseline()
-        .and_then(|()| harness.recover_transition());
-    if let Err(error) = recovery {
-        harness.state["status"] = json!("blocked");
-        harness.state["recovery_error"] = json!(format!("{error:#}"));
-        harness.state["error"] = json!(format!("Patch recovery failed: {error:#}"));
-        for verdict in harness.verdicts.as_array_mut().unwrap() {
-            verdict["agent_status"] = verdict["status"].clone();
-            verdict["status"] = json!("blocked");
-            verdict["rationale"] = json!(
-                "Patch recovery failed; retained historical evidence does not establish the current worktree result"
-            );
-        }
-    }
-    if interrupted() {
-        harness.state["status"] = json!("interrupted");
-    }
-    if let Some(denial) = crate::runtime::policy::denial(&harness.directory) {
-        harness.state["status"] = json!("blocked");
-        harness.state["error"] = denial["message"].clone();
-    }
-    for entry in harness.state["stages"].as_array_mut().unwrap() {
-        if entry["status"] == "running" {
-            entry["status"] = json!("failed");
-            entry["finished_at"] = json!(now());
-        }
-    }
-    harness.state["stage"] = json!(6);
-    harness.state["finished_at"] = json!(now());
-    harness.state["audit_finalized"] = json!(true);
-    harness.save()?;
-    if harness.artifacts["test-developer"]["patch"]
-        .as_str()
-        .is_some_and(|patch| !patch.trim().is_empty())
-        && harness.state["status"] != "interrupted"
-        && crate::runtime::policy::denial(&harness.directory).is_none()
-    {
-        if let Err(error) = crate::runtime::publication::publish(
-            &harness.directory,
-            &mut harness.state,
-            &harness.artifacts,
-            &harness.execution,
-            config,
-        ) {
-            progress(&format!(
-                "Test publication failed: {error:#}; retry with aaqe publish {id}"
-            ));
-        }
-        harness.save()?;
-        if let Some(url) = harness.state["publication"]["mr_url"].as_str() {
-            progress(&format!("GitLab MR: {url}"));
-        }
-    }
-    generate_report(
-        &harness.directory,
-        &harness.state,
-        &harness.artifacts,
-        &harness.execution,
-        &harness.verdicts,
-    )?;
-    progress(&format!(
-        "{}; report: {}",
-        harness.state["status"].as_str().unwrap(),
-        harness.directory.join("report.md").display()
-    ));
+    harness.finalize()?;
     Ok(harness.state)
 }

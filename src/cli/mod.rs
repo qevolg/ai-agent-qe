@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use std::{
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -34,6 +34,16 @@ pub struct Cli {
 enum Action {
     /// Run an audit from a natural-language prompt
     Run { prompt: Option<String> },
+    /// Continue a saved Run, reusing its live tmux conversation when available
+    Resume {
+        #[arg(long)]
+        run_dir: PathBuf,
+        #[arg(long, value_parser = crate::agents::stage::STAGES)]
+        from_stage: Option<String>,
+        /// Explicitly adopt this installed AAQE release for recovery
+        #[arg(long)]
+        takeover: bool,
+    },
     /// Check local executables without launching an audit
     Doctor,
     /// Print a saved report
@@ -57,6 +67,8 @@ enum Action {
     TmuxWorker { directory: PathBuf },
     #[command(name = "__harness-mcp", hide = true)]
     HarnessMcp { directory: PathBuf },
+    #[command(name = "__harness-request", hide = true)]
+    HarnessRequest { directory: PathBuf },
     #[command(name = "__stage-worker", hide = true)]
     StageWorker { directory: PathBuf, parent: u32 },
     #[command(name = "__terminal-log", hide = true)]
@@ -86,7 +98,10 @@ pub fn main() -> i32 {
         };
     }
     let cli = Cli::parse();
-    let mcp = matches!(cli.action, Some(Action::HarnessMcp { .. }));
+    let mcp = matches!(
+        cli.action,
+        Some(Action::HarnessMcp { .. } | Action::HarnessRequest { .. })
+    );
     match execute(cli) {
         Ok(code) => code,
         Err(error) => {
@@ -109,6 +124,25 @@ fn execute(cli: Cli) -> Result<i32> {
         worker(directory)?;
         return Ok(0);
     }
+    if let Some(Action::HarnessRequest { directory }) = &cli.action {
+        install_signals()?;
+        let mut request = String::new();
+        io::stdin().read_to_string(&mut request)?;
+        let parent = unsafe { libc::getppid() };
+        let cancel = directory.join("stages/coordinator/cancel");
+        std::thread::spawn(move || {
+            loop {
+                if cancel.exists() || unsafe { libc::getppid() } != parent {
+                    crate::runtime::process::request_interrupt();
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        });
+        let response = crate::agents::mcp::request(directory, &serde_json::from_str(&request)?)?;
+        println!("{response}");
+        return Ok(0);
+    }
     install_signals()?;
     if let Some(Action::StageWorker { directory, parent }) = &cli.action {
         crate::runtime::process::stage_worker(directory, *parent)?;
@@ -117,6 +151,29 @@ fn execute(cli: Cli) -> Result<i32> {
     if let Some(Action::HarnessMcp { directory }) = &cli.action {
         crate::agents::mcp::serve(directory)?;
         return Ok(0);
+    }
+    if let Some(Action::Resume {
+        run_dir,
+        from_stage,
+        takeover,
+    }) = &cli.action
+    {
+        let state = crate::audit::recovery::resume(
+            &expand_user(run_dir),
+            from_stage.as_deref(),
+            *takeover,
+            &|message| println!("{message}"),
+        )?;
+        println!(
+            "Run {}: {}",
+            state["id"].as_str().unwrap_or(""),
+            state["status"].as_str().unwrap_or("failed")
+        );
+        return Ok(i32::from(
+            !["running", "completed"]
+                .iter()
+                .any(|s| state["status"] == *s),
+        ));
     }
     let caller = std::env::current_dir()?;
     let mut config = Config::load(&caller, cli.config.as_deref())?;

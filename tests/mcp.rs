@@ -93,7 +93,7 @@ fn native_coordinator_retains_one_interactive_tui_and_fresh_background_stages() 
     let config = Config {
         state_dir: temp.path().join("runs"),
         codex_command: support::codex(&["--loop-test"]),
-        run_timeout: 3,
+        run_timeout: 20,
         ..Config::default()
     };
     let _cleanup = Cleanup(config.state_dir.clone());
@@ -107,7 +107,7 @@ fn native_coordinator_retains_one_interactive_tui_and_fresh_background_stages() 
     assert_eq!(session, format!("aaqe-{}", state["id"].as_str().unwrap()));
     let terminal = read_json(&coordinator.join("terminal.json")).unwrap();
     assert_eq!(terminal, json!({"stdin":true,"stdout":true,"stderr":true}));
-    std::thread::sleep(std::time::Duration::from_millis(3200));
+    std::thread::sleep(std::time::Duration::from_millis(20200));
     assert!(
         !coordinator.join("finished").exists(),
         "TUI exited with the audit"
@@ -215,7 +215,7 @@ fn mcp_protocol_errors_do_not_pollute_stdout() {
         .collect();
     assert_eq!(replies.len(), 4);
     assert_eq!(replies[0]["result"]["protocolVersion"], "2024-11-05");
-    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 6);
+    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 7);
     assert_eq!(replies[2]["result"]["isError"], true);
     assert_eq!(replies[3]["error"]["code"], -32601);
 }
@@ -238,7 +238,7 @@ fn cancelling_or_timing_out_the_coordinator_stops_separate_stage_processes() {
         let runs = temp.path().join("runs");
         let _cleanup = Cleanup(runs.clone());
         let config = temp.path().join("test-config.yaml");
-        fs::write(&config,serde_json::to_string(&json!({"state_dir":runs,"codex":{"command":support::codex(&["--cancel-test",if cancellation == "kill-mcp" {"--kill-mcp-test"}else{"--normal-mcp-test"}])},"loop":{"timeout":if cancellation == "timeout" {3} else {30}}})).unwrap()).unwrap();
+        fs::write(&config,serde_json::to_string(&json!({"state_dir":runs,"codex":{"command":support::codex(&["--cancel-test",if cancellation == "kill-mcp" {"--kill-mcp-test"}else{"--normal-mcp-test"}])},"loop":{"timeout":if cancellation == "timeout" {8} else {30}}})).unwrap()).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_aaqe"))
             .current_dir(temp.path())
             .args(["--config", config.to_str().unwrap(), "run", "audit"])
@@ -360,4 +360,135 @@ fn environment_tools_advertise_validated_operation_inputs() {
             .validate(&args)
             .unwrap();
     }
+}
+
+#[test]
+fn resume_and_takeover_reuse_the_original_tui_and_relay() {
+    let temp = tempfile::tempdir().unwrap();
+    repo(temp.path());
+    let config = Config {
+        state_dir: temp.path().join("runs"),
+        codex_command: support::codex(&["--loop-test", "--resume-test"]),
+        run_timeout: 30,
+        ..Config::default()
+    };
+    let _cleanup = Cleanup(config.state_dir.clone());
+    let state = aaqe::audit::workflow::run_audit("audit", temp.path(), &config, &|_| {}).unwrap();
+    assert_eq!(state["status"], "blocked", "{state}");
+    let directory = config.state_dir.join(state["id"].as_str().unwrap());
+    let coordinator = directory.join("stages/coordinator");
+    let pid = fs::read_to_string(coordinator.join("tui.pid")).unwrap();
+    let session = read_json(&coordinator.join("tmux.json")).unwrap()["session"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The human can resume directly in the retained conversation.
+    Command::new("tmux")
+        .args([
+            "send-keys",
+            "-t",
+            &session,
+            "继续，从 bug-hunter 开始",
+            "Enter",
+        ])
+        .status()
+        .unwrap();
+    wait_for(&coordinator.join("resumed.txt"));
+    assert_eq!(
+        read_json(&directory.join("report.json")).unwrap()["status"],
+        "completed"
+    );
+    fs::remove_file(coordinator.join("resumed.txt")).unwrap();
+    // A newer installed executor explicitly takes over without replacing TUI/MCP.
+    let output = Command::new(env!("CARGO_BIN_EXE_aaqe"))
+        .args(["resume", "--run-dir"])
+        .arg(&directory)
+        .arg("--takeover")
+        .current_dir("/")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    wait_for(&coordinator.join("resumed.txt"));
+    let saved = read_json(&directory.join("harness.json")).unwrap();
+    assert_eq!(saved["state"]["status"], "completed");
+    assert_eq!(saved["state"]["resume_round"], 2);
+    assert_ne!(
+        saved["state"]["executor"]["path"],
+        state["executor"]["path"]
+    );
+    assert_eq!(
+        fs::read_to_string(coordinator.join("tui.pid")).unwrap(),
+        pid
+    );
+    assert!(Path::new(state["executor"]["path"].as_str().unwrap()).is_file());
+    let log = fs::read_to_string(coordinator.join("tools.jsonl")).unwrap();
+    assert!(log.contains(saved["state"]["executor"]["path"].as_str().unwrap()));
+    assert!(directory.join("resumes/0001/harness.json").is_file());
+    assert!(directory.join("resumes/0002/harness.json").is_file());
+}
+
+fn wait_for(path: &Path) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !path.is_file() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "missing {}",
+            path.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn resume_launches_a_replacement_tui_only_after_the_original_is_gone() {
+    let temp = tempfile::tempdir().unwrap();
+    repo(temp.path());
+    let config = Config {
+        state_dir: temp.path().join("runs"),
+        codex_command: support::codex(&["--loop-test", "--resume-test"]),
+        run_timeout: 30,
+        ..Config::default()
+    };
+    let _cleanup = Cleanup(config.state_dir.clone());
+    let state = aaqe::audit::workflow::run_audit("audit", temp.path(), &config, &|_| {}).unwrap();
+    let directory = config.state_dir.join(state["id"].as_str().unwrap());
+    let old_pid = fs::read_to_string(directory.join("stages/coordinator/tui.pid")).unwrap();
+    cleanup_tmux(&directory).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_aaqe"))
+        .args(["resume", "--run-dir"])
+        .arg(&directory)
+        .args(["--from-stage", "code-explorer"])
+        .current_dir("/")
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let saved = read_json(&directory.join("harness.json")).unwrap();
+    assert_eq!(saved["state"]["workspace"], state["workspace"]);
+    assert_eq!(saved["state"]["status"], "blocked");
+    assert_eq!(saved["state"]["stages"].as_array().unwrap().len(), 6);
+    assert_ne!(
+        fs::read_to_string(directory.join("stages/coordinator/tui.pid")).unwrap(),
+        old_pid
+    );
+    assert!(
+        directory
+            .join("resumes/0001/coordinator/terminal.log")
+            .is_file()
+    );
+    assert!(
+        directory
+            .join("stages/code-explorer/attempts/0003/output.json")
+            .is_file()
+    );
 }

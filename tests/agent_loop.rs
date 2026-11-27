@@ -274,9 +274,9 @@ impl TestRuntime for Runtime {
         if id.starts_with("coverage-") {
             fs::write(directory.join("raw.txt"), "measurement")?;
             fs::write(directory.join("coverage.json"), json!({"files":[{"path":"app.rs","covered_lines":1,"executable_lines":1}],"raw_reports":["raw.txt"]}).to_string())?;
-            return Ok(
-                json!({"test_id":id,"directory":directory,"result":{"returncode":0,"timed_out":false}}),
-            );
+            let record = json!({"test_id":id,"directory":directory,"result":{"returncode":0,"timed_out":false}});
+            aaqe::state::write_json(&directory.join("execution.json"), &record)?;
+            return Ok(record);
         }
         let baseline = id.starts_with("baseline");
         if !baseline {
@@ -1158,5 +1158,190 @@ fn baseline_patch_restore_failure_stops_before_empty_baseline_target_and_recover
         )
         .unwrap(),
         "#[test] fn regression() { assert!(false); }\n"
+    );
+}
+
+#[test]
+fn resume_validator_keeps_patch_evidence_and_renews_budgets() {
+    let (_temp, _state, directory) = audit("attempt-budget");
+    let before = read_json(&directory.join("harness.json")).unwrap();
+    let agent = Agent { mode: "retry" };
+    let factory = |_: &Path, d: &Path, _: &str, _: Value, _: u64| -> Box<dyn TestRuntime> {
+        Box::new(Runtime {
+            root: d.join("executions"),
+        })
+    };
+    let mut h = AuditHarness::open(&directory, &agent, &factory, &|_| {}).unwrap();
+    let stage = h.resume(Some("test-validator")).unwrap();
+    assert_eq!(stage, "test-validator");
+    assert_eq!(
+        h.status()["state"]["applied_patch"],
+        before["state"]["applied_patch"]
+    );
+    assert_eq!(h.status()["execution"], before["execution"]);
+    assert_eq!(
+        h.status()["state"]["workspace"],
+        before["state"]["workspace"]
+    );
+    assert!(directory.join("resumes/0001/harness.json").is_file());
+    assert_eq!(
+        h.run_stage("test-validator", "fresh independent review")
+            .unwrap()["status"],
+        "completed"
+    );
+    h.finish("completed", "resumed confirmation").unwrap();
+    let saved = read_json(&directory.join("harness.json")).unwrap();
+    assert_eq!(saved["state"]["audit_finalized"], true);
+    assert_eq!(
+        read_json(&directory.join("report.json")).unwrap()["status"],
+        "completed"
+    );
+}
+
+#[test]
+fn resume_upstream_archives_and_invalidates_downstream() {
+    let (_temp, _state, directory) = audit("budget");
+    let agent = Agent { mode: "retry" };
+    let factory = |_: &Path, d: &Path, _: &str, _: Value, _: u64| -> Box<dyn TestRuntime> {
+        Box::new(Runtime {
+            root: d.join("executions"),
+        })
+    };
+    let mut h = AuditHarness::open(&directory, &agent, &factory, &|_| {}).unwrap();
+    assert!(h.resume(Some("coordinator")).is_err());
+    assert_eq!(h.resume(Some("bug-hunter")).unwrap(), "bug-hunter");
+    assert!(h.status()["artifacts"].get("bug-hunter").is_none());
+    assert!(h.status()["artifacts"].get("test-developer").is_none());
+    assert!(
+        h.status()["execution"]["tests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !Path::new(h.status()["workspace"]["path"].as_str().unwrap())
+            .join("tests/generated.rs")
+            .exists()
+    );
+    assert_eq!(
+        h.run_stage("bug-hunter", "revisit behavior").unwrap()["status"],
+        "completed"
+    );
+    assert!(
+        h.resume(None).is_err(),
+        "running coordinator must not be reset"
+    );
+}
+
+#[test]
+fn resumed_validator_reruns_missing_raw_evidence_without_another_developer() {
+    assert_resumed_validation_refreshes_missing_evidence("tests");
+}
+
+#[test]
+fn resumed_validator_reruns_missing_baseline_evidence() {
+    assert_resumed_validation_refreshes_missing_evidence("baseline");
+}
+
+#[test]
+fn resumed_validator_reruns_missing_coverage_evidence() {
+    assert_resumed_validation_refreshes_missing_evidence("coverage");
+}
+
+fn assert_resumed_validation_refreshes_missing_evidence(kind: &str) {
+    let (_temp, _state, directory) = audit("budget");
+    let before = read_json(&directory.join("harness.json")).unwrap();
+    let record = if kind == "coverage" {
+        &before["execution"]["coverage"]["record"]
+    } else {
+        &before["execution"][kind][0]
+    };
+    let missing = Path::new(record["directory"].as_str().unwrap()).join(if kind == "coverage" {
+        "raw.txt"
+    } else {
+        "execution.json"
+    });
+    fs::remove_file(missing).unwrap();
+    let agent = Agent { mode: "retry" };
+    let factory = |_: &Path, d: &Path, _: &str, _: Value, _: u64| -> Box<dyn TestRuntime> {
+        Box::new(Runtime {
+            root: d.join("executions"),
+        })
+    };
+    let mut h = AuditHarness::open(&directory, &agent, &factory, &|_| {}).unwrap();
+    assert_eq!(h.resume(None).unwrap(), "test-validator");
+    assert_eq!(h.status()["state"]["resume_requires_execution"], true);
+    assert_eq!(
+        h.run_stage("test-validator", "validate fresh evidence")
+            .unwrap()["status"],
+        "completed"
+    );
+    assert_eq!(h.status()["state"]["resume_requires_execution"], false);
+    assert_ne!(
+        h.status()["execution"]["tests"][0]["directory"],
+        before["execution"]["tests"][0]["directory"]
+    );
+    assert_eq!(
+        h.status()["state"]["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["name"] == "test-developer")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn resume_rejects_busy_drift_and_future_state_without_mutation() {
+    let (_temp, state, directory) = audit("budget");
+    let before = fs::read(directory.join("harness.json")).unwrap();
+    let resume = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_aaqe"))
+            .args(["resume", "--run-dir"])
+            .arg(&directory)
+            .arg("--takeover")
+            .output()
+            .unwrap()
+    };
+    let lock = aaqe::state::RunLock::acquire(&directory).unwrap();
+    let output = resume();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("busy"));
+    assert_eq!(fs::read(directory.join("harness.json")).unwrap(), before);
+    drop(lock);
+    let root = Path::new(state["workspace"]["path"].as_str().unwrap());
+    fs::write(root.join("app.rs"), "unaccepted drift\n").unwrap();
+    let output = resume();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("accepted patch"));
+    assert_eq!(fs::read(directory.join("harness.json")).unwrap(), before);
+    let mut saved: Value = serde_json::from_slice(&before).unwrap();
+    saved["schema_version"] = json!(999);
+    aaqe::state::write_json(&directory.join("harness.json"), &saved).unwrap();
+    let output = resume();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Unsupported harness snapshot"));
+}
+
+#[test]
+fn failed_executor_takeover_does_not_leave_a_running_audit() {
+    let (temp, _state, directory) = audit("budget");
+    fs::rename(
+        directory.join("runtime"),
+        directory.join("original-runtime"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(temp.path(), directory.join("runtime")).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aaqe"))
+        .args(["resume", "--run-dir"])
+        .arg(&directory)
+        .arg("--takeover")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(
+        read_json(&directory.join("harness.json")).unwrap()["state"]["status"],
+        "blocked"
     );
 }

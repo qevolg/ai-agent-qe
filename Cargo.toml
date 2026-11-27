@@ -49,3 +49,10 @@ tempfile = "3"
 [profile.release]
 lto = "thin"
 strip = true
+
+# Executor integrity is checked for every launch, including native debug tests.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev]
+debug = "line-tables-only"

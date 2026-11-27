@@ -133,6 +133,10 @@ impl AuditHarness<'_> {
             "finished_at",
             "error",
             "environment_ready",
+            "resume_round",
+            "resume_from_stage",
+            "resume_requires_execution",
+            "executor",
         ] {
             state[key] = self.state[key].clone();
         }

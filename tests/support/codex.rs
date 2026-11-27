@@ -132,7 +132,8 @@ fn coordinate(args: &[String], directory: &Path, settings: BTreeMap<&str, &str>)
             "inspect_environment",
             "prepare_environment",
             "execute_tests",
-            "finish"
+            "finish",
+            "resume"
         ])
     );
     assert_eq!(
@@ -227,13 +228,38 @@ fn coordinate(args: &[String], directory: &Path, settings: BTreeMap<&str, &str>)
         }
     }
     if !failed {
-        let result=client.tool("finish",json!({"status":"completed","reason":"All current candidates were checked independently"}));
+        let result=client.tool("finish",json!({"status":if flag(args,"--resume-test") {"blocked"} else {"completed"},"reason":"All current candidates were checked independently"}));
         assert_eq!(result["isError"], false, "{result}");
     }
     println!("Audit finished via harness tools; ready for follow-up");
     io::stdout().flush().unwrap();
     for line in io::stdin().lock().lines() {
         let line = line.unwrap();
+        if line.contains("继续") {
+            let status = client.tool("status", json!({}));
+            if status["structuredContent"]["state"]["status"] != "running" {
+                assert_eq!(
+                    client.tool("resume", json!({"from_stage":"bug-hunter"}))["isError"],
+                    false
+                );
+            }
+            assert_eq!(
+                client.tool(
+                    "run_stage",
+                    json!({"stage":"bug-hunter","instruction":"resume independent stage"})
+                )["isError"],
+                false
+            );
+            assert_eq!(
+                client.tool(
+                    "finish",
+                    json!({"status":"completed","reason":"Resumed in original conversation"})
+                )["isError"],
+                false
+            );
+            fs::write(directory.join("resumed.txt"), &line).unwrap();
+            continue;
+        }
         let status = client.tool("status", json!({}));
         assert!(status["structuredContent"]["state"]["finished_at"].is_string());
         assert_eq!(

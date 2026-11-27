@@ -27,31 +27,31 @@ Only test code may change in the audited target project. AAQE implementation may
 **Files:** src/guards/patch.rs, src/config.rs, call sites, resources, aaqe.yaml.example, docs.
 **Interfaces:** PatchGate accepts any safe path; with_patch records exact expected worktree contents.
 
-- [ ] Write tests for inline/nonstandard tests and accepted-patch drift, observe failures.
-- [ ] Remove directory/AST policy, enforce exact worktree patch integrity in execution/reproduction/publication.
-- [ ] Simplify configuration and broaden Designer/Validator prompts.
-- [ ] Run focused patch/config/agent tests; expected all pass. Commit task.
+- [x] Write tests for inline/nonstandard tests and accepted-patch drift, observe failures.
+- [x] Remove directory/AST policy, enforce exact worktree patch integrity in execution/reproduction/publication.
+- [x] Simplify configuration and broaden Designer/Validator prompts.
+- [x] Run focused patch/config/agent tests; expected all pass. Commit task.
 
 ### Task 2: Immutable executor and worker dispatch
 
 **Files:** src/runtime/executor.rs, process.rs, tmux.rs, agents/codex.rs, agents/mcp.rs, CLI internal commands, installer tests.
 **Interfaces:** capture returns immutable runtime metadata; resolve validates recorded hash; MCP dispatch uses active executor on every call.
 
-- [ ] Write upgrade, tamper and deleted-inode regression tests; observe failures.
-- [ ] Capture durable immutable per-run executable and pin worker/MCP/terminal launches.
-- [ ] Extract single-request harness dispatch and relay it through the active executor.
-- [ ] Verify focused transport/MCP/installer tests; expected all pass. Commit task.
+- [x] Write upgrade, tamper and deleted-inode regression tests; observe failures.
+- [x] Capture durable immutable per-run executable and pin worker/MCP/terminal launches.
+- [x] Extract single-request harness dispatch and relay it through the active executor.
+- [x] Verify focused transport/MCP/installer tests; expected all pass. Commit task.
 
 ### Task 3: Resume and finalization
 
 **Files:** src/audit/harness/resume.rs, harness lifecycle, CLI, tmux, MCP, tests.
 **Interfaces:** resume(from_stage) archives checkpoints and starts a fresh round; external resume reuses live TUI and explicit takeover selects compatible executor.
 
-- [ ] Write resume lifecycle, budgets, invalidation, stale evidence and concurrent operation tests; observe failures.
-- [ ] Implement stage selection, checkpoint archives, recovery integrity and budget offsets.
-- [ ] Add CLI resume and harness resume, retained-TUI delivery, replacement TUI fallback, legacy bridge and explicit takeover.
-- [ ] Factor idempotent finalization callable after persistent harness finish.
-- [ ] Verify focused and full suite; expected all pass. Commit task.
+- [x] Write resume lifecycle, budgets, invalidation, stale evidence and concurrent operation tests; observe failures.
+- [x] Implement stage selection, checkpoint archives, recovery integrity and budget offsets.
+- [x] Add CLI resume and harness resume, retained-TUI delivery, replacement TUI fallback, legacy bridge and explicit takeover.
+- [x] Factor idempotent finalization callable after persistent harness finish.
+- [x] Verify focused and full suite; expected all pass. Commit task.
 
 ### Task 4: Documentation, review and publication
 

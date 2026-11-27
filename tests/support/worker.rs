@@ -205,6 +205,13 @@ fn main() {
         return;
     }
     match args.get(1).map(String::as_str) {
+        Some("executor-snapshot") => {
+            let directory = Path::new(&args[2]);
+            fs::write(directory.join("ready"), "").unwrap();
+            wait(&directory.join("continue"));
+            let metadata = aaqe::runtime::executor::capture(directory).unwrap();
+            aaqe::state::write_json(&directory.join("captured.json"), &metadata).unwrap();
+        }
         Some("process") => process(&serde_json::from_str(&args[2]).unwrap()),
         Some("codex") => codex::run(&args[2..]),
         Some("codex-output") => {

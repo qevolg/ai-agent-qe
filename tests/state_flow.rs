@@ -74,9 +74,14 @@ fn failed_reproduction_start_is_registered_without_changing_original_evidence() 
     state["status"] = json!("completed");
     state["environment"] = json!({}); // deterministic startup error before invoking Docker
     state["workspace"] = json!({"path":root,"commit":git(&root, &["rev-parse","HEAD"])});
+    let patch = "diff --git a/tests/generated.txt b/tests/generated.txt\nnew file mode 100644\n--- /dev/null\n+++ b/tests/generated.txt\n@@ -0,0 +1 @@\n+test fixture\n";
+    fs::create_dir(root.join("tests")).unwrap();
+    fs::write(root.join("tests/generated.txt"), "test fixture\n").unwrap();
+    state["applied_patch"] = json!(patch);
     let mut saved = snapshot(&state);
     saved["verdicts"] = json!([{"candidate_id":"bug","status":"confirmed"}]);
     saved["artifacts"]["test-developer"] = json!({"tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[]}]});
+    saved["artifacts"]["test-developer"]["patch"] = json!(patch);
     write_json(&directory.join("harness.json"), &saved).unwrap();
     fs::create_dir_all(directory.join("artifacts")).unwrap();
     fs::write(
@@ -112,6 +117,7 @@ fn busy_run_rejects_mutation_and_mcp_remains_available_after_contention() {
         .create("audit", &Config::default(), temp.path())
         .unwrap();
     let directory = store.path(state["id"].as_str().unwrap()).unwrap();
+    state["executor"] = aaqe::runtime::executor::capture(&directory).unwrap();
     write_json(&directory.join("harness.json"), &snapshot(&state)).unwrap();
     let lock = aaqe::state::RunLock::acquire(&directory).unwrap();
     let error = aaqe::audit::workflow::reproduce(&store, &mut state, None).unwrap_err();

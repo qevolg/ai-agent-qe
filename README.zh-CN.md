@@ -83,3 +83,44 @@ aaqe cleanup RUN_ID
 报告、日志、覆盖率和发布状态保存在 `~/.aaqe/runs/RUN_ID/`。复现重用已保存的环境和命令，不再次调用 AI。清理移除本轮拥有的容器和 tmux 会话，保留报告与测试 Worktree。
 
 [开发与运行参考](docs/configuration.md#development) · [MIT 许可证](LICENSE)
+
+## 继续审计与运行期间升级
+
+当外层命令输出 `blocked` 后，可以连接打印出的 tmux 会话，解决具体阻塞，
+然后在原 Codex 对话中输入“继续，从 test-validator 开始”。协调器会调用
+harness 的 `resume` 工具，在原会话中继续执行。
+
+也可以从另一终端运行：
+
+```bash
+aaqe resume --run-dir ~/.aaqe/runs/RUN_ID
+aaqe resume --run-dir ~/.aaqe/runs/RUN_ID --from-stage test-validator
+```
+
+阶段值为 `code-explorer`、`bug-hunter`、`test-designer`、`test-developer`、
+`test-validator`，不提供阶段时选择下一可执行角色。原协调器仍存活时向原对话
+发送继续指令；原协调器已退出时才启动替代 TUI。恢复使用保存的配置、原提交和
+Worktree，不重新拉取源码。旧检查点归档到 `resumes/`，所有 attempt、原始证据
+继续保留，新一轮单独计算预算，不计入人工等待时间。重新分析或修改测试会使相关
+下游结论失效；Validator 可以复用仍匹配的执行证据，证据缺失时重新执行测试。
+安全策略拒绝仍是终止条件。
+
+新 Run 会把 AAQE 复制为 `RUN_DIR/runtime/aaqe`，保存版本、SHA-256 和路径，
+所有内部进程都使用这份固定执行器。安装器先校验完整的临时文件、刷盘，再原子替换
+安装入口。新安装影响后续新 Run，正在运行的 Run 继续使用原版本。
+如需让已有 Run 明确采用新安装的修复版本：
+
+```bash
+aaqe resume --run-dir ~/.aaqe/runs/RUN_ID --from-stage test-validator --takeover
+```
+
+接管会检查状态格式和执行器协议兼容性，新增一份执行器，保留旧副本。新版 MCP relay
+会将后续请求交给新执行器，TUI 无需重启。旧版 Run 在恢复时建立第一份快照；仍存活
+的旧 MCP 无法热加载更新，AAQE 会向原对话发送通过终端工具调用新执行器的明确指令。
+若原对话无法执行这条桥接指令，需保留其历史、退出旧协调器，再运行恢复命令启动替代
+TUI。仅替换安装文件不会修复已经启动的旧 MCP。
+
+“仅修改测试代码”约束的是被审计项目。测试可以位于任意路径，也可以内嵌于生产源文件。
+Developer 和独立 Validator 逐项审查测试语义，AAQE 检查路径安全、基线提交及已接受补丁
+的一致性。设计阶段根据实际行为考虑正常、边界、异常输入、生命周期、并发、依赖故障、
+精度、转义和标识冲突等情况，并说明不适用的维度。

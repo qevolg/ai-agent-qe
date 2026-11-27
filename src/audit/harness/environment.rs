@@ -46,6 +46,13 @@ impl AuditHarness<'_> {
             .filter(|stage| self.stage_gate(stage, "status").is_ok())
             .copied()
             .collect();
+        if ["blocked", "failed", "interrupted", "completed"]
+            .iter()
+            .any(|s| self.state["status"] == *s)
+            && crate::runtime::policy::denial(&self.directory).is_none()
+        {
+            actions.push("resume");
+        }
         if self.state["status"] == "running"
             && !interrupted()
             && crate::runtime::policy::denial(&self.directory).is_none()
@@ -87,7 +94,12 @@ impl AuditHarness<'_> {
                 .as_array()
                 .map_or(0, Vec::len);
         ensure!(
-            (count as u64) < self.config.max_stage_calls,
+            (count.saturating_sub(
+                self.state["round_offsets"]["operations"]
+                    .as_u64()
+                    .unwrap_or(0) as usize
+            ) as u64)
+                < self.config.max_stage_calls,
             "Environment operation budget exhausted"
         );
         Ok(remaining)
@@ -314,6 +326,9 @@ impl AuditHarness<'_> {
         self.state["execution_attempts"].as_array_mut().unwrap().push(json!({"at":now(),"directory":attempt,"test_ids":output["tests"].as_array().unwrap().iter().map(|t|t["id"].clone()).collect::<Vec<_>>(),"status":"running"}));
         self.save_execution(attempt)?;
         let outcome = self.execute_round(output, attempt);
+        if outcome.is_ok() {
+            self.state["resume_requires_execution"] = json!(false);
+        }
         self.state["execution_attempts"][entry]["status"] = json!(if outcome.is_ok() {
             "completed"
         } else {
@@ -483,6 +498,15 @@ impl AuditHarness<'_> {
                 if let Some(test_id) = for_test_id {
                     record["for_test_id"] = json!(test_id);
                 }
+                write_json(
+                    &Path::new(
+                        record["directory"]
+                            .as_str()
+                            .context("Missing baseline directory")?,
+                    )
+                    .join("execution.json"),
+                    &record,
+                )?;
                 let healthy =
                     record["result"]["returncode"] == 0 && record["result"]["timed_out"] != true;
                 self.execution["baseline"]

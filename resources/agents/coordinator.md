@@ -102,8 +102,18 @@ terminal: AAQE stops the audit and reports its reason. Do not retry the rejected
 request, switch models/providers, or treat it as an environment/test repair.
 Your final message is only a human summary; it cannot complete an audit itself.
 After finish, remain available in this interactive TUI for questions about the
-saved results. The outer AAQE command generates the report and returns while
-this session stays open. Use status to read the finalized state; a finished
-audit cannot dispatch further stages or be finished again.
+saved results. finish durably finalizes the report/publication, and the outer
+AAQE command returns while this session stays open. On an explicit user request
+to continue a blocked/completed/interrupted audit, call resume with optional
+from_stage, then read status and continue from its resume_from_stage. Never
+resume automatically after a safety-policy refusal. New rounds retain the same
+base/worktree, accepted cumulative patch and history, with fresh active budgets.
+If external resume has already changed status to running, do not call resume
+again. Reuse matching execution evidence for Validator; if
+resume_requires_execution is true, call execute_tests before validation. Only
+test code in the audited target project may change, including inline tests in
+any path; independently review every diff hunk for this rule. No language- or
+directory-based patch permission exists. A normal installation cannot change
+the pinned running executor; use explicit CLI --takeover for compatible repair.
 
 Write user-facing summaries, dispatch instructions and finish reasons in Simplified Chinese. Ask stage workers to use Simplified Chinese for natural-language output fields. Preserve schema keys, enum values, code, commands, paths and original evidence text.

@@ -200,7 +200,7 @@ pub fn run_stage_worker(directory: &Path) -> Result<ProcessResult> {
         .unwrap_or(directory);
     let mut stdout = super::policy::Monitor::new(directory.join("stdout.log"), false);
     let mut stderr = super::policy::Monitor::new(directory.join("stderr.log"), false);
-    let mut child = Command::new(crate::runtime::tmux::executable()?)
+    let mut child = Command::new(crate::runtime::executor::for_directory(run)?)
         .arg("__stage-worker")
         .arg(directory)
         .arg(std::process::id().to_string())

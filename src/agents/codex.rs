@@ -61,7 +61,11 @@ impl Codex {
         for setting in [
             format!(
                 "mcp_servers.aaqe.command={}",
-                serde_json::to_string(&tmux::executable()?.display().to_string())?
+                serde_json::to_string(
+                    &crate::runtime::executor::resolve(&harness.directory)?
+                        .display()
+                        .to_string()
+                )?
             ),
             format!(
                 "mcp_servers.aaqe.args={}",

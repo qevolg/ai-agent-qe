@@ -55,6 +55,12 @@ pub fn tools() -> Value {
             &[]
         ),
         tool(
+            "resume",
+            "Explicitly continue a blocked/completed/interrupted audit in this conversation. Preserve history and start fresh budgets. Optional from_stage chooses where to revisit.",
+            json!({"from_stage":{"type":"string","enum":crate::agents::stage::STAGES}}),
+            &[]
+        ),
+        tool(
             "finish",
             "Finish explicitly with a reason. Completed requires current analysis and independent validation for candidates. Blocked preserves partial evidence.",
             json!({"status":{"type":"string","enum":["completed","blocked"]},"reason":{"type":"string","minLength":1}}),
@@ -114,6 +120,12 @@ fn call(harness: &mut AuditHarness<'_>, params: &Value) -> Result<Value> {
                 .map(|v| serde_json::from_value(v.clone()))
                 .transpose()?,
         ),
+        "resume" => {
+            let stage = harness.resume(arguments["from_stage"].as_str())?;
+            Ok(
+                json!({"status":"running","from_stage":stage,"audit":harness.model_status(None,None)}),
+            )
+        }
         "finish" => {
             harness.finish(
                 arguments["status"].as_str().unwrap(),
@@ -136,7 +148,9 @@ impl Drop for ServerGuard {
     }
 }
 
-pub fn serve(directory: &Path) -> Result<()> {
+/// A single request is executed by the current pinned executor, not the relay.
+pub fn request(directory: &Path, params: &Value) -> Result<Value> {
+    let _operation = crate::state::RunLock::acquire(directory)?;
     let saved = read_json(&directory.join("harness.json"))?;
     let config: Config = serde_json::from_value(saved["state"]["config"].clone())?;
     let agent = Codex::new(&config);
@@ -152,6 +166,65 @@ pub fn serve(directory: &Path) -> Result<()> {
     };
     let progress = |message: &str| eprintln!("{message}");
     let mut harness = AuditHarness::open(directory, &agent, &factory, &progress)?;
+    let result = call(&mut harness, params);
+    let (value, error) = match result {
+        Ok(value) => {
+            let failed = value["status"] == "failed";
+            (value, failed)
+        }
+        Err(error) => (
+            json!({"status":"failed","gate":"tool_dispatch","error":format!("{error:#}"),"recovery":harness.recovery()}),
+            true,
+        ),
+    };
+    let value = if ["status", "finish", "resume"].contains(&params["name"].as_str().unwrap_or("")) {
+        value
+    } else {
+        crate::audit::harness::tool_view(&value)
+    };
+    let response = json!({"result":{"content":[{"type":"text","text":serde_json::to_string(&value)?}],"structuredContent":value,"isError":error}});
+    let coordinator = directory.join("stages/coordinator");
+    fs::create_dir_all(&coordinator)?;
+    writeln!(
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(coordinator.join("tools.jsonl"))?,
+        "{}",
+        json!({"at":crate::state::now(),"executor":std::env::current_exe()?,"request":{"params":params},"response":response})
+    )?;
+    if params["name"] == "finish" && !error {
+        File::create(coordinator.join("audit-finished"))?;
+    }
+    Ok(response)
+}
+
+fn forward(directory: &Path, params: &Value) -> Result<Value> {
+    let executor = crate::runtime::executor::for_directory(directory)?;
+    let saved = read_json(&directory.join("harness.json"))?;
+    let timeout = saved["state"]["config"]["run_timeout"]
+        .as_u64()
+        .unwrap_or(43200);
+    let result = crate::runtime::process::run(
+        &[
+            executor.display().to_string(),
+            "__harness-request".into(),
+            directory.display().to_string(),
+        ],
+        None,
+        timeout.saturating_add(30),
+        Some(&serde_json::to_string(params)?),
+    );
+    anyhow::ensure!(
+        result.returncode == 0,
+        "Harness request worker failed: {}",
+        result.stderr
+    );
+    serde_json::from_str(&result.stdout).context("Invalid harness request response")
+}
+
+pub fn serve(directory: &Path) -> Result<()> {
+    let saved = read_json(&directory.join("harness.json"))?;
     let coordinator = directory.join("stages/coordinator");
     fs::create_dir_all(&coordinator)?;
     let marker = coordinator.join("mcp-running");
@@ -207,7 +280,6 @@ pub fn serve(directory: &Path) -> Result<()> {
         };
         let method = request["method"].as_str().unwrap_or("");
         // Keep ownership through logging, response flush and finish acknowledgement.
-        let mut operation_lock = None;
         let response = match method {
             "initialize" => {
                 let requested = request["params"]["protocolVersion"].as_str().unwrap_or("");
@@ -220,42 +292,14 @@ pub fn serve(directory: &Path) -> Result<()> {
             }
             "ping" => json!({"result":{}}),
             "tools/list" => json!({"result":{"tools":tools()}}),
-            "tools/call" => {
-                let result = (|| {
-                    operation_lock = Some(crate::state::RunLock::acquire(directory)?);
-                    harness.reload()?;
-                    call(&mut harness, &request["params"])
-                })();
-                let (value, error) = match result {
-                    Ok(value) => {
-                        let failed = value["status"] == "failed";
-                        (value, failed)
-                    }
-                    Err(error) => (
-                        json!({"status":"failed","gate":"tool_dispatch","error":format!("{error:#}"),"recovery":harness.recovery()}),
-                        true,
-                    ),
-                };
-                let value = if request["params"]["name"] == "status"
-                    || request["params"]["name"] == "finish"
-                {
-                    value
-                } else {
-                    crate::audit::harness::tool_view(&value)
-                };
-                json!({"result":{"content":[{"type":"text","text":serde_json::to_string(&value)?}],"structuredContent":value,"isError":error}})
-            }
+            "tools/call" => match forward(directory, &request["params"]) {
+                Ok(response) => response,
+                Err(error) => {
+                    json!({"result":{"content":[{"type":"text","text":format!("{error:#}")}],"isError":true}})
+                }
+            },
             _ => json!({"error":{"code":-32601,"message":"Method not found"}}),
         };
-        if method == "tools/call" {
-            let log = directory.join("stages/coordinator/tools.jsonl");
-            std::fs::create_dir_all(log.parent().unwrap())?;
-            writeln!(
-                OpenOptions::new().create(true).append(true).open(log)?,
-                "{}",
-                json!({"at":crate::state::now(),"request":request,"response":response})
-            )?;
-        }
         let mut reply = json!({"jsonrpc":"2.0","id":id});
         reply
             .as_object_mut()
@@ -263,13 +307,6 @@ pub fn serve(directory: &Path) -> Result<()> {
             .extend(response.as_object().unwrap().clone());
         writeln!(stdout, "{reply}")?;
         stdout.flush()?;
-        if method == "tools/call"
-            && request["params"]["name"] == "finish"
-            && reply["result"]["isError"] == false
-        {
-            File::create(coordinator.join("audit-finished"))?;
-        }
-        drop(operation_lock);
     }
     Ok(())
 }

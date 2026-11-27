@@ -29,7 +29,7 @@ if [[ "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
     echo 'AAQE binary installation supports Linux x86_64 only.' >&2
     exit 1
 fi
-for command_name in curl tar sha256sum mktemp install mv; do
+for command_name in curl tar sha256sum mktemp install mv sync; do
     command -v "$command_name" >/dev/null || { echo "Missing command: $command_name" >&2; exit 1; }
 done
 
@@ -56,7 +56,10 @@ tar -xzf "${work_dir}/${archive_name}" -C "$work_dir" aaqe
 mkdir -p "$install_dir"
 install_file="$(mktemp "${install_dir}/.aaqe.XXXXXX")"
 install -m 755 "${work_dir}/aaqe" "$install_file"
-mv -f "$install_file" "${install_dir}/aaqe"
+# Flush the complete replacement before switching the entry atomically.
+sync -f "$install_file"
+mv -fT -- "$install_file" "${install_dir}/aaqe"
+sync -f "$install_dir"
 install_file=""
 echo "Installed AAQE to ${install_dir}/aaqe"
 case ":${PATH}:" in
