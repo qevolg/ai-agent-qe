@@ -55,7 +55,13 @@ Only test code may change in the audited target project. AAQE implementation may
 
 ### Task 4: Documentation, review and publication
 
-- [ ] Document commands, lifecycle and upgrade limitations in both READMEs/configuration docs.
+- [x] Document commands, lifecycle and upgrade limitations in both READMEs/configuration docs.
 - [x] Run fmt, clippy, complete native test suite and release build.
 - [x] Request one fresh-context whole-branch reviewer, fix important findings with failing regression tests.
-- [ ] Commit and push approved task branch, verify remote SHA.
+- [x] Commit and push approved task branch, verify remote SHA.
+
+## Completion evidence
+
+The final native suite passed 139 tests with no failures; the Docker integration is run separately. Stable and Rust 1.88 Clippy with warnings denied, formatting, release build and cargo package verification passed. One fresh-context reviewer completed the whole-branch review and focused follow-ups with no unresolved Critical or Important findings. The implementation was pushed to `origin/feat/resumable-pinned-audits`, and remote SHA `1ba91a2c8b4a9369002868a4b3b1f7d94505f523` matched the implementation commit.
+
+Legacy coordinators cannot use a writable bridge through their read-only terminal sandbox. They require preserving the conversation history, closing the old TUI and resuming the same Run with a replacement; modern relays retain the original TUI. Abnormal resumed exits save local reports without waiting for remote publication; blocked timeout results retain explicit `aaqe publish RUN_ID` retry.
