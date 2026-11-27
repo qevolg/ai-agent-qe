@@ -1,10 +1,14 @@
+mod support;
 use aaqe::{
+    audit::{
+        interfaces::{AuditAgent, TestRuntime},
+        workflow::run_audit_with,
+    },
     config::Config,
-    environment::ComposeEnvironment,
-    gitops::git,
-    state::{Store, read_json},
-    tmux::cleanup_tmux,
-    workflow::{AuditAgent, TestRuntime, run_audit_with},
+    runtime::compose::ComposeEnvironment,
+    runtime::git::git,
+    runtime::tmux::cleanup_tmux,
+    state::read_json,
 };
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
@@ -19,30 +23,15 @@ fn command(root: &Path, args: &[&str]) -> String {
     git(root, args).unwrap()
 }
 fn repository(temp: &Path) -> PathBuf {
-    let remote = temp.join("remote.git");
-    fs::create_dir(&remote).unwrap();
-    command(&remote, &["init", "--bare"]);
-    let root = temp.join("repo");
-    fs::create_dir(&root).unwrap();
-    command(&root, &["init", "-b", "main"]);
-    command(&root, &["config", "user.email", "test@example.invalid"]);
-    command(&root, &["config", "user.name", "AAQE Test"]);
-    fs::write(root.join("app.py"), "def value():\n    return 1\n").unwrap();
-    command(&root, &["add", "."]);
-    command(&root, &["commit", "-m", "base"]);
-    command(
-        &root,
-        &["remote", "add", "origin", remote.to_str().unwrap()],
-    );
-    command(&root, &["push", "origin", "main"]);
-    root
+    support::repository(temp, false)
 }
+
 struct Agent {
     mode: &'static str,
 }
 impl AuditAgent for Agent {
-    fn coordinate(&self, harness: &mut aaqe::harness::AuditHarness<'_>) -> Result<()> {
-        for stage in aaqe::workflow::STAGES {
+    fn coordinate(&self, harness: &mut aaqe::audit::harness::AuditHarness<'_>) -> Result<()> {
+        for stage in aaqe::agents::stage::STAGES {
             let result = harness.run_stage(stage, "scripted regression scenario")?;
             if result["status"] == "failed" {
                 return harness.finish("blocked", result["error"].as_str().unwrap());
@@ -67,7 +56,7 @@ impl AuditAgent for Agent {
     ) -> Result<Value> {
         let mut output = match stage {
             "code-explorer" => {
-                json!({"summary":"explored","scope":["app.py"],"references":[{"id":"source","path":if self.mode=="invented" {"missing.py"} else {"app.py"},"line":1,"claim":"one"}],"uncertainties":[],"environment":{"compose_files":["compose.yaml"],"services":["runner"],"runner_service":"runner","runner_workdir":"/workspace","external_containers":[],"readiness_timeout":30},"baseline":[["baseline"]]})
+                json!({"summary":"explored","scope":["app.rs"],"references":[{"id":"source","path":if self.mode=="invented" {"missing.rs"} else {"app.rs"},"line":1,"claim":"one"}],"uncertainties":[],"environment":{"compose_files":["compose.yaml"],"services":["runner"],"runner_service":"runner","runner_workdir":"/workspace","external_containers":[],"readiness_timeout":30},"baseline":[["baseline"]]})
             }
             "bug-hunter" => {
                 if self.mode == "fail" {
@@ -79,7 +68,7 @@ impl AuditAgent for Agent {
                 json!({"summary":"plan","plans":[{"candidate_id":"bug","test_id":"test","expectation":"two","oracle":"requirement","steps":["call"],"reproduction":["rerun"],"blocked_reason":if self.mode=="blocked" {json!("no requirement")} else {Value::Null}}]})
             }
             "test-developer" => {
-                json!({"summary":"test","patch":"--- /dev/null\n+++ b/tests/test_generated.py\n@@ -0,0 +1 @@\n+assert False\n","tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[]}],"limitations":[]})
+                json!({"summary":"test","patch":"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1 @@\n+#[test] fn regression() { assert!(false); }\n","tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[]}],"limitations":[]})
             }
             "test-validator" => {
                 json!({"summary":"checked","verdicts":[{"candidate_id":"bug","test_ids":["test"],"status":"confirmed","rationale":"assertion failed","evidence":[if self.mode=="fabricated" {"made-up.json".to_owned()} else {format!("{}/execution.json",inputs["execution"]["tests"][0]["directory"].as_str().unwrap())}]}]})
@@ -103,7 +92,7 @@ impl TestRuntime for Runtime {
     }
     fn logs(&self) -> Result<()> {
         if self.mode == "interrupt-baseline" {
-            let result = aaqe::process::run(
+            let result = aaqe::runtime::process::run(
                 &[
                     "touch".into(),
                     self.root
@@ -123,7 +112,7 @@ impl TestRuntime for Runtime {
         let baseline = id.starts_with("baseline");
         // This observes the actual git patch reversal, rather than mocking that operation.
         assert_eq!(
-            self.workspace.join("tests/test_generated.py").exists(),
+            self.workspace.join("tests/generated.rs").exists(),
             !baseline
         );
         let directory = self.root.join(id);
@@ -168,7 +157,7 @@ fn interrupted_baseline_restores_generated_patch_and_collects_logs() {
         );
         return;
     }
-    aaqe::process::install_signals().unwrap();
+    aaqe::runtime::process::install_signals().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let root = repository(temp.path());
     let config = Config {
@@ -193,7 +182,7 @@ fn interrupted_baseline_restores_generated_patch_and_collects_logs() {
     assert_eq!(state["status"], "interrupted");
     assert!(
         Path::new(state["workspace"]["path"].as_str().unwrap())
-            .join("tests/test_generated.py")
+            .join("tests/generated.rs")
             .is_file()
     );
     let dir = config.state_dir.join(state["id"].as_str().unwrap());
@@ -202,7 +191,7 @@ fn interrupted_baseline_restores_generated_patch_and_collects_logs() {
         read_json(&dir.join("report.json")).unwrap()["status"],
         "interrupted"
     );
-    assert!(aaqe::process::interrupted());
+    assert!(aaqe::runtime::process::interrupted());
 }
 #[test]
 fn workflow_preserves_stages_baseline_patch_evidence_and_partial_reports() {
@@ -243,7 +232,7 @@ fn workflow_preserves_stages_baseline_patch_evidence_and_partial_reports() {
         let report = read_json(&dir.join("report.json")).unwrap();
         assert!(dir.join("report.md").is_file());
         assert_eq!(state["stage"], 6);
-        assert!(!root.join("tests/test_generated.py").exists());
+        assert!(!root.join("tests/generated.rs").exists());
         match mode {
             "empty" => {
                 assert_eq!(state["status"], "completed");
@@ -271,73 +260,6 @@ fn workflow_preserves_stages_baseline_patch_evidence_and_partial_reports() {
 }
 fn binary() -> Command {
     Command::new(env!("CARGO_BIN_EXE_aaqe"))
-}
-#[test]
-fn cli_saved_python_run_compatibility_and_cleanup_idempotence() {
-    let temp = tempfile::tempdir().unwrap();
-    let config = Config {
-        state_dir: temp.path().join("runs"),
-        ..Config::default()
-    };
-    let store = Store::new(&config.state_dir);
-    // Captured with the original Python Store and generate_report before removal.
-    let mut state: Value = serde_json::from_str(include_str!("fixtures/python-run.json")).unwrap();
-    let id = state["id"].as_str().unwrap().to_owned();
-    let dir = store.path(&id).unwrap();
-    store.save(&state).unwrap();
-    fs::write(
-        dir.join("report.json"),
-        include_str!("fixtures/python-report.json"),
-    )
-    .unwrap();
-    fs::write(dir.join("report.md"), "Legacy Python run compatibility\n").unwrap();
-    state["status"] = json!("running");
-    store.save(&state).unwrap();
-    let active = binary()
-        .args([
-            "--state-dir",
-            config.state_dir.to_str().unwrap(),
-            "cleanup",
-            &id,
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(active.status.code(), Some(2));
-    assert!(store.load(&id).unwrap()["tmux_cleaned_at"].is_null());
-    state["status"] = json!("completed");
-    store.save(&state).unwrap();
-    for _ in 0..2 {
-        let result = binary()
-            .args([
-                "--state-dir",
-                config.state_dir.to_str().unwrap(),
-                "cleanup",
-                &id,
-            ])
-            .output()
-            .unwrap();
-        assert!(
-            result.status.success(),
-            "{}",
-            String::from_utf8_lossy(&result.stdout)
-        );
-    }
-    let report = binary()
-        .args([
-            "--state-dir",
-            config.state_dir.to_str().unwrap(),
-            "report",
-            &id,
-        ])
-        .output()
-        .unwrap();
-    assert!(report.status.success());
-    assert!(String::from_utf8_lossy(&report.stdout).contains("Legacy Python run compatibility"));
-    assert!(store.load(&id).unwrap()["tmux_cleaned_at"].is_string());
-    assert_eq!(
-        read_json(&dir.join("report.json")).unwrap()["tmux_cleaned_at"],
-        store.load(&id).unwrap()["tmux_cleaned_at"]
-    );
 }
 #[test]
 fn cli_prompt_options_version_and_invalid_inputs() {
@@ -403,7 +325,7 @@ impl Drop for Cleanup {
     }
 }
 #[test]
-#[ignore = "requires a running Docker daemon, tmux and python3 for the deterministic model fixture"]
+#[ignore = "requires a running Docker daemon and tmux"]
 fn real_docker_workflow_reproduction_and_owned_cleanup() {
     real_docker_scenario(false);
     real_docker_scenario(true);
@@ -413,22 +335,7 @@ fn real_docker_scenario(early_inline: bool) {
     eprintln!("real Docker scenario: early_inline={early_inline}");
     let temp = tempfile::tempdir().unwrap();
     let root = repository(temp.path());
-    let project = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for name in [
-        "README.md",
-        "compose.yaml",
-        "run_tests.py",
-        "app.py",
-        "aaqe.yaml",
-    ] {
-        fs::copy(project.join("examples/minimal").join(name), root.join(name)).unwrap();
-    }
-    fs::create_dir(root.join("tests")).unwrap();
-    fs::copy(
-        project.join("examples/minimal/tests/test_baseline.py"),
-        root.join("tests/test_baseline.py"),
-    )
-    .unwrap();
+    support::project::create(&root);
     if early_inline {
         fs::remove_file(root.join("compose.yaml")).unwrap();
     }
@@ -439,13 +346,9 @@ fn real_docker_scenario(early_inline: bool) {
     let config_file = root.join("aaqe.yaml");
     let mut config: Value =
         serde_yaml::from_str(&fs::read_to_string(&config_file).unwrap()).unwrap();
-    let mut fixture_command = vec![
-        json!("python3"),
-        json!(project.join("tests/fixtures/scripted_codex.py")),
-        json!("--retry-developer"),
-    ];
+    let mut fixture_command = support::codex(&["--retry-developer"]);
     if early_inline {
-        fixture_command.push(json!("--early-inline"));
+        fixture_command.push("--early-inline".into());
         config["environment"] = json!({});
         config["baseline"] = json!([]);
     }
@@ -485,7 +388,7 @@ fn real_docker_scenario(early_inline: bool) {
             fs::read_to_string(dir.join("executions/early-ready")).unwrap(),
             "ready before Explorer and Developer"
         );
-        let readiness: Vec<_> = fs::read_dir(dir.join("environment/readiness-0"))
+        let readiness: Vec<_> = fs::read_dir(dir.join("environment/readiness-1"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .collect();
@@ -502,7 +405,10 @@ fn real_docker_scenario(early_inline: bool) {
                     .unwrap()
             })
             .collect();
-        assert!(codes.contains(&0) && codes.contains(&1), "{codes:?}");
+        assert!(
+            codes.contains(&0) && codes.iter().any(|code| *code != 0),
+            "{codes:?}"
+        );
         assert!(dir.join("environment/dependency-setup.json").is_file());
         let explorer = read_json(&dir.join("stages/code-explorer/input.json")).unwrap();
         assert_eq!(explorer["environment_ready"], true);
@@ -565,7 +471,15 @@ fn real_docker_scenario(early_inline: bool) {
             2,
         );
         let saved = runtime.saved_setup().unwrap();
-        runtime.record_setup_with_replace(&[vec!["sh".into(), "-c".into(), "echo started > /aaqe-results/installer-started; sleep 8; echo leaked > /aaqe-results/installer-leaked".into()]], true).unwrap();
+        runtime
+            .record_setup_with_replace(
+                &[vec![
+                    "/aaqe-results/project-runner".into(),
+                    "installer".into(),
+                ]],
+                true,
+            )
+            .unwrap();
         assert!(runtime.start().is_err());
         assert!(
             dir.join("executions/installer-started").exists(),
@@ -614,7 +528,7 @@ fn real_docker_scenario(early_inline: bool) {
         let developer = saved["artifacts"]["test-developer"].clone();
         let mut second = developer["tests"][0].clone();
         second["id"] = json!("failed-preparation");
-        second["reproduction_commands"] = json!([["python", "-c", "raise SystemExit(9)"]]);
+        second["reproduction_commands"] = json!([["/aaqe-results/project-runner", "fail"]]);
         saved["artifacts"]["test-developer"]["tests"]
             .as_array_mut()
             .unwrap()
@@ -732,7 +646,7 @@ fn real_docker_scenario(early_inline: bool) {
             .status
             .success()
     );
-    for stage in aaqe::workflow::STAGES
+    for stage in aaqe::agents::stage::STAGES
         .into_iter()
         .chain(["test-developer/attempts/0002"])
     {

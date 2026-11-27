@@ -1,7 +1,7 @@
 # AAQE 可选项目配置：复制到被审计项目的 aaqe.yaml，或使用 --config PATH。
 # 默认只查运行命令时所在目录，不向上搜索；安装不会自动生成配置。
 # 时间与新运行编号统一使用 Asia/Shanghai，无需配置时区。
-# 完整字段说明：README.md / README.zh-CN.md；可运行示例：examples/minimal/。
+# 完整字段说明：README.md / README.zh-CN.md。
 state_dir: ~/.aaqe/runs
 
 git:

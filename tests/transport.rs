@@ -1,10 +1,11 @@
 #![cfg(unix)]
+mod support;
 
 use aaqe::{
-    codex::Codex,
+    agents::codex::Codex,
     config::Config,
+    runtime::tmux::{cleanup_tmux, run_tmux, run_tui},
     state::{read_json, write_json},
-    tmux::{cleanup_tmux, run_tmux, run_tui},
 };
 use serde_json::json;
 use std::{
@@ -76,7 +77,7 @@ fn tmux_streams_logs_and_preserves_arguments() {
     fs::write(&prompt, "stage input\n").unwrap();
     let argument = "; touch UNEXPECTED $(echo unsafe)";
     thread::scope(|scope| {
-        let handle = scope.spawn(|| run_tmux(&strings(&["sh", "-c", "cat; printf '%s\\n' \"$1\"; printf 'live diagnostic\\n' >&2; touch ready; while [ ! -f release ]; do sleep .02; done", "sh", argument]), &workspace, &stage, &prompt, 10, &|_| {}));
+        let handle = scope.spawn(|| run_tmux(&support::command(json!({"stdin":true,"stdout":format!("{argument}\n"),"stderr":"live diagnostic\n","ready":"ready","wait":"release"})), &workspace, &stage, &prompt, 10, &|_| {}));
         ready(&workspace.join("ready"));
         let stdout = fs::read_to_string(stage.join("stdout.log")).unwrap();
         assert_eq!(stdout, format!("stage input\n{argument}\n"));
@@ -90,18 +91,31 @@ fn tmux_streams_logs_and_preserves_arguments() {
     });
     assert!(!workspace.join("UNEXPECTED").exists());
     let session = read_json(&stage.join("tmux.json")).unwrap();
-    let pane = Command::new("tmux")
-        .args([
-            "capture-pane",
-            "-p",
-            "-S",
-            "-",
-            "-t",
-            session["session"].as_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(String::from_utf8_lossy(&pane.stdout).contains("live diagnostic"));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let pane = Command::new("tmux")
+            .args([
+                "capture-pane",
+                "-p",
+                "-S",
+                "-",
+                "-t",
+                session["session"].as_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        if pane.status.success()
+            && String::from_utf8_lossy(&pane.stdout).contains("live diagnostic")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "tmux did not render diagnostic: {}",
+            String::from_utf8_lossy(&pane.stdout)
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
     cleanup_tmux(dir.path()).unwrap();
     cleanup_tmux(dir.path()).unwrap();
 }
@@ -112,7 +126,7 @@ fn tmux_preserves_exit_and_spawn_errors() {
     for (name, command, code) in [
         (
             "failed",
-            strings(&["sh", "-c", "echo diagnostic >&2; exit 23"]),
+            support::command(json!({"stderr":"diagnostic\n","exit":23})),
             23,
         ),
         ("missing", strings(&["aaqe-nonexistent-executable"]), 127),
@@ -136,11 +150,7 @@ fn timeout_kills_child_group_and_keeps_evidence() {
     let prompt = stage.join("prompt.md");
     fs::write(&prompt, "").unwrap();
     let result = run_tmux(
-        &strings(&[
-            "sh",
-            "-c",
-            "sleep 30 & echo $! > child.pid; echo before-timeout; wait",
-        ]),
+        &support::command(json!({"child":true,"child_pid":"child.pid","stdout":"before-timeout\n","delay_ms":30000})),
         dir.path(),
         &stage,
         &prompt,
@@ -164,10 +174,11 @@ fn timeout_kills_child_group_and_keeps_evidence() {
 #[test]
 fn codex_bundles_skills_and_validates_output() {
     let dir = Sessions::new();
-    let script = dir.path().join("codex.sh");
-    fs::write(&script, "#!/bin/sh\ncat > received.txt\noutput=\nwhile [ $# -gt 0 ]; do\nif [ \"$1\" = --output-last-message ]; then shift; output=$1; fi\nshift\ndone\nprintf '%s' '{\"summary\":\"done\",\"candidates\":[],\"excluded_areas\":[]}' > \"$output\"\necho visible-output\necho visible-diagnostic >&2\n").unwrap();
     let config = Config {
-        codex_command: vec!["sh".into(), script.display().to_string()],
+        codex_command: vec![
+            support::worker().display().to_string(),
+            "codex-output".into(),
+        ],
         ..Config::default()
     };
     let stage = dir.path().join("stages/bug-hunter");
@@ -221,7 +232,7 @@ fn cleanup_refuses_foreign_ownership_and_target_patterns() {
     fs::create_dir_all(&stage).unwrap();
     let prompt = stage.join("prompt.md");
     fs::write(&prompt, "").unwrap();
-    run_tmux(&strings(&["true"]), dir.path(), &stage, &prompt, 5, &|_| {}).unwrap();
+    run_tmux(&support::success(), dir.path(), &stage, &prompt, 5, &|_| {}).unwrap();
     let metadata = read_json(&stage.join("tmux.json")).unwrap();
     write_json(
         &dir.path().join("other/stages/bug-hunter/tmux.json"),
@@ -257,7 +268,7 @@ fn deleting_live_session_stops_its_process() {
     thread::scope(|scope| {
         let handle = scope.spawn(|| {
             run_tmux(
-                &strings(&["sh", "-c", "echo $$ > codex.pid; sleep 30 & wait"]),
+                &support::command(json!({"pid":"codex.pid","child":true,"delay_ms":30000})),
                 dir.path(),
                 &stage,
                 &prompt,
@@ -297,7 +308,7 @@ fn callback_panic_cancels_just_started_worker() {
     fs::write(&prompt, "").unwrap();
     let result = std::panic::catch_unwind(|| {
         run_tmux(
-            &strings(&["sh", "-c", "sleep .5; touch leaked"]),
+            &support::command(json!({"delay_ms":500,"touch":"leaked"})),
             dir.path(),
             &stage,
             &prompt,
@@ -313,10 +324,12 @@ fn callback_panic_cancels_just_started_worker() {
 #[test]
 fn codex_rejects_invalid_structured_output() {
     let dir = Sessions::new();
-    let script = dir.path().join("invalid.sh");
-    fs::write(&script, "#!/bin/sh\nwhile [ $# -gt 0 ]; do\nif [ \"$1\" = --output-last-message ]; then shift; output=$1; fi\nshift\ndone\nprintf '{}' > \"$output\"\n").unwrap();
     let config = Config {
-        codex_command: vec!["sh".into(), script.display().to_string()],
+        codex_command: vec![
+            support::worker().display().to_string(),
+            "codex-output".into(),
+            "--invalid".into(),
+        ],
         ..Config::default()
     };
     let error = Codex::new(&config)
@@ -334,10 +347,10 @@ fn codex_rejects_invalid_structured_output() {
 #[test]
 fn background_stage_streams_logs_without_tmux_and_kills_descendants_on_timeout() {
     let dir = Sessions::new();
-    let script = dir.path().join("stage.sh");
-    fs::write(&script, "cat > received.txt\necho live-output\necho live-error >&2\nsleep 30 &\necho $! > child.pid\ntouch ready\nwait\n").unwrap();
     let config = Config {
-        codex_command: vec!["sh".into(), script.display().to_string()],
+        codex_command: support::command(
+            json!({"input_file":"received.txt","stdout":"live-output\n","stderr":"live-error\n","child":true,"child_pid":"child.pid","ready":"ready","delay_ms":30000}),
+        ),
         agent_timeout: 1,
         ..Config::default()
     };
@@ -379,8 +392,6 @@ fn background_stage_streams_logs_without_tmux_and_kills_descendants_on_timeout()
 
 #[test]
 fn tui_exit_during_pane_query_preserves_the_recorded_result() {
-    use std::os::unix::fs::PermissionsExt;
-
     if let Some(root) = std::env::var_os("AAQE_TUI_EXIT_RACE_DIR") {
         let root = Path::new(&root);
         let stage = root.join("stages/coordinator");
@@ -390,13 +401,8 @@ fn tui_exit_during_pane_query_preserves_the_recorded_result() {
             &json!({"state":{"status":"completed"}}),
         )
         .unwrap();
-        let command = if completed {
-            "while [ ! -f \"$AAQE_TUI_EXIT_RACE_DIR/pane-query\" ]; do sleep .01; done; touch \"$AAQE_TUI_EXIT_RACE_DIR/stages/coordinator/audit-finished\"; exit 0"
-        } else {
-            "while [ ! -f \"$AAQE_TUI_EXIT_RACE_DIR/pane-query\" ]; do sleep .01; done; exit 23"
-        };
         let result = run_tui(
-            &strings(&["sh", "-c", command]),
+            &[support::worker().display().to_string(), "tui-race".into()],
             root,
             &stage,
             &coordinator_id(),
@@ -419,40 +425,12 @@ fn tui_exit_during_pane_query_preserves_the_recorded_result() {
     let dir = Sessions::new();
     let bin = dir.path().join("bin");
     fs::create_dir(&bin).unwrap();
-    let real_tmux = Command::new("sh")
-        .args(["-c", "command -v tmux"])
-        .output()
+    let real_tmux = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|p| p.join("tmux"))
+        .find(|p| p.is_file())
         .unwrap();
-    assert!(real_tmux.status.success());
-    let real_tmux = String::from_utf8(real_tmux.stdout).unwrap();
-    let wrapper = bin.join("tmux");
-    fs::write(
-        &wrapper,
-        r##"#!/usr/bin/env python3
-import os
-import subprocess
-import sys
-import time
-from pathlib import Path
-
-command = [os.environ["AAQE_REAL_TMUX"], *sys.argv[1:]]
-if sys.argv[1] == "display-message" and sys.argv[-1] == "#{pane_dead}":
-    root = Path(os.environ["AAQE_TUI_EXIT_RACE_DIR"])
-    (root / "pane-query").touch()
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline:
-        result = subprocess.run(command, capture_output=True)
-        if (root / "stages/coordinator/finished").exists() and result.stdout.strip() == b"1":
-            sys.stdout.buffer.write(result.stdout)
-            sys.stderr.buffer.write(result.stderr)
-            sys.exit(result.returncode)
-        time.sleep(.01)
-    sys.exit("TUI worker did not exit during the pane query")
-os.execv(command[0], command)
-"##,
-    )
-    .unwrap();
-    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let real_tmux = real_tmux.display().to_string();
+    support::executable(&bin.join("tmux"), json!({"mode":"tmux-race"}));
     let mut paths = vec![bin];
     paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
     let path = std::env::join_paths(paths).unwrap();
@@ -483,10 +461,8 @@ os.execv(command[0], command)
 fn tui_timeout_kills_descendants_that_outlive_the_leader() {
     let dir = Sessions::new();
     let stage = dir.path().join("stages/coordinator");
-    let script = dir.path().join("tui.py");
-    fs::write(&script, "import os, signal, time\npid = os.fork()\nif pid == 0:\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n    signal.signal(signal.SIGHUP, signal.SIG_IGN)\n    open('descendant.pid', 'w').write(str(os.getpid()))\ntime.sleep(60)\n").unwrap();
     let error = run_tui(
-        &strings(&["python3", script.to_str().unwrap()]),
+        &support::command(json!({"child":true,"stubborn_child":true,"child_pid":"descendant.pid","delay_ms":60000})),
         dir.path(),
         &stage,
         &coordinator_id(),
@@ -515,7 +491,8 @@ fn worker_environment_does_not_inherit_stale_tmux_server_variables() {
     let seed = format!("aaqe-test-seed-{}", uuid::Uuid::new_v4().simple());
     assert!(
         Command::new("tmux")
-            .args(["new-session", "-d", "-s", &seed, "sleep 30"])
+            .args(["new-session", "-d", "-s", &seed])
+            .arg(format!("{} idle", support::worker().display()))
             .status()
             .unwrap()
             .success()
@@ -528,9 +505,8 @@ fn worker_environment_does_not_inherit_stale_tmux_server_variables() {
             .unwrap()
             .success()
     );
-    let command = format!("printf '%s\\n' \"${{{variable}:-unset}}\"");
     let result = run_tmux(
-        &strings(&["sh", "-c", &command]),
+        &support::command(json!({"print_env":variable})),
         dir.path(),
         &stage,
         &prompt,
@@ -554,7 +530,7 @@ fn interrupting_audit_preserves_report_and_session_and_stops_codex() {
     let repository = dir.path().join("repository");
     let remote = dir.path().join("remote.git");
     fs::create_dir(&repository).unwrap();
-    let git = |path: &Path, argv: &[&str]| aaqe::gitops::git(path, argv).unwrap();
+    let git = |path: &Path, argv: &[&str]| aaqe::runtime::git::git(path, argv).unwrap();
     git(dir.path(), &["init", "--bare", remote.to_str().unwrap()]);
     git(&repository, &["init", "-b", "main"]);
     git(&repository, &["config", "user.name", "Test User"]);
@@ -570,16 +546,10 @@ fn interrupting_audit_preserves_report_and_session_and_stops_codex() {
         &["remote", "add", "origin", remote.to_str().unwrap()],
     );
     git(&repository, &["push", "-u", "origin", "main"]);
-    let script = dir.path().join("codex.sh");
     let pid_path = dir.path().join("codex.pid");
-    fs::write(
-        &script,
-        "#!/bin/sh\nprintf '%s\\n' \"$AAQE_TEST_CURRENT\" >&2\necho $$ > \"$1\"\nsleep 30 & wait\n",
-    )
-    .unwrap();
+    let config = dir.path().join("aaqe.yaml");
     let state_root = dir.path().join("runs");
-    let config = dir.path().join("config.yaml");
-    fs::write(&config, serde_json::to_string(&json!({"state_dir":state_root,"codex":{"command":["sh",script,pid_path]},"timeouts":{"agent":20}})).unwrap()).unwrap();
+    fs::write(&config, serde_json::to_string(&json!({"state_dir":state_root,"codex":{"command":support::command(json!({"stderr_env":"AAQE_TEST_CURRENT","pid":pid_path,"child":true,"delay_ms":30000}))},"timeouts":{"agent":20}})).unwrap()).unwrap();
     let mut parent = Command::new(env!("CARGO_BIN_EXE_aaqe"))
         .current_dir(&repository)
         .env(
@@ -658,13 +628,14 @@ fn interrupting_audit_preserves_report_and_session_and_stops_codex() {
 
 #[test]
 fn stuck_tmux_control_times_out_and_kills_its_descendants_after_interrupt() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = Sessions::new();
     let bin = dir.path().join("bin");
     fs::create_dir(&bin).unwrap();
     let fake_tmux = bin.join("tmux");
-    fs::write(&fake_tmux, "#!/bin/sh\necho $$ > \"$AAQE_CONTROL_PID\"\n/bin/sleep 30 &\necho $! > \"$AAQE_CONTROL_CHILD_PID\"\nwait\n").unwrap();
-    fs::set_permissions(&fake_tmux, fs::Permissions::from_mode(0o755)).unwrap();
+    support::executable(
+        &fake_tmux,
+        json!({"pid":dir.path().join("control.pid"),"child":true,"child_pid":dir.path().join("control-child.pid"),"delay_ms":30000}),
+    );
     let runs = dir.path().join("runs");
     let run = runs.join("bounded-control");
     write_json(
@@ -737,7 +708,7 @@ fn cleanup_discovers_nested_attempts_and_refuses_directory_symlinks() {
     fs::create_dir_all(&stage).unwrap();
     let prompt = stage.join("prompt.md");
     fs::write(&prompt, "").unwrap();
-    run_tmux(&strings(&["true"]), dir.path(), &stage, &prompt, 5, &|_| {}).unwrap();
+    run_tmux(&support::success(), dir.path(), &stage, &prompt, 5, &|_| {}).unwrap();
     let session = read_json(&stage.join("tmux.json")).unwrap()["session"]
         .as_str()
         .unwrap()

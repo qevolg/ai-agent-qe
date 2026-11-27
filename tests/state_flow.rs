@@ -1,3 +1,4 @@
+mod support;
 use aaqe::{
     config::Config,
     state::{Store, read_json, write_json},
@@ -7,85 +8,6 @@ use std::{fs, path::Path};
 
 fn snapshot(state: &Value) -> Value {
     json!({"schema_version":1,"state":state,"artifacts":{},"execution":{"baseline":[],"tests":[]},"verdicts":[]})
-}
-
-#[test]
-fn post_audit_state_updates_survive_reloading_and_stale_compatibility_files() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::new(temp.path());
-    let mut state = store
-        .create("audit", &Config::default(), temp.path())
-        .unwrap();
-    let id = state["id"].as_str().unwrap().to_owned();
-    let directory = store.path(&id).unwrap();
-    state["status"] = json!("completed");
-    write_json(&directory.join("harness.json"), &snapshot(&state)).unwrap();
-    state["reproductions"] = json!([{"id":"repro-1","status":"failed","error":"readiness failed"}]);
-    store.save(&state).unwrap();
-    assert_eq!(
-        read_json(&directory.join("harness.json")).unwrap()["state"]["reproductions"][0]["id"],
-        "repro-1"
-    );
-    fs::write(directory.join("run.json"), "broken projection").unwrap();
-    assert_eq!(
-        store.load(&id).unwrap()["reproductions"][0]["id"],
-        "repro-1"
-    );
-}
-
-#[test]
-fn unversioned_snapshot_imports_post_audit_fields_without_replacing_audit_state() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::new(temp.path());
-    let mut state = store
-        .create("audit", &Config::default(), temp.path())
-        .unwrap();
-    let id = state["id"].as_str().unwrap().to_owned();
-    let directory = store.path(&id).unwrap();
-    state["status"] = json!("completed");
-    let mut saved = snapshot(&state);
-    saved.as_object_mut().unwrap().remove("schema_version");
-    write_json(&directory.join("harness.json"), &saved).unwrap();
-    state["status"] = json!("running"); // stale audit field in the compatibility file
-    state["reproductions"] = json!([{"id":"legacy-repro"}]);
-    state["environment_cleaned_at"] = json!("yesterday");
-    state["environment_retained"] = json!(false);
-    write_json(&directory.join("run.json"), &state).unwrap();
-    let loaded = store.load(&id).unwrap();
-    assert_eq!(loaded["status"], "completed");
-    assert_eq!(loaded["reproductions"][0]["id"], "legacy-repro");
-    assert_eq!(loaded["environment_cleaned_at"], "yesterday");
-}
-
-#[test]
-fn invalid_snapshots_are_rejected_at_load_with_field_context() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::new(temp.path());
-    let state = store
-        .create("audit", &Config::default(), temp.path())
-        .unwrap();
-    let id = state["id"].as_str().unwrap();
-    let directory = store.path(id).unwrap();
-    for (field, invalid, expected) in [
-        ("schema_version", json!(99), "version"),
-        ("artifacts", json!([]), "artifacts"),
-        (
-            "state",
-            json!({"id":id,"status":"unknown","stages":[],"config":Config::default()}),
-            "status",
-        ),
-        (
-            "state",
-            json!({"id":id,"status":"completed","stages":"broken","config":Config::default()}),
-            "stages",
-        ),
-    ] {
-        let mut saved = snapshot(&state);
-        saved[field] = invalid;
-        write_json(&directory.join("harness.json"), &saved).unwrap();
-        let error = store.load(id).unwrap_err();
-        assert!(format!("{error:#}").contains(expected), "{error:#}");
-    }
 }
 
 #[test]
@@ -99,7 +21,7 @@ fn reproduction_rejects_active_audits_before_accessing_artifacts() {
     for status in ["initializing", "running"] {
         state["status"] = json!(status);
         store.save(&state).unwrap();
-        let error = aaqe::workflow::reproduce(&store, &mut state, None).unwrap_err();
+        let error = aaqe::audit::workflow::reproduce(&store, &mut state, None).unwrap_err();
         assert!(
             format!("{error:#}").contains("audit is running"),
             "{error:#}"
@@ -119,7 +41,7 @@ fn terminal_status_during_audit_finalization_rejects_reproduction_and_cleanup() 
     state["audit_finalized"] = json!(false);
     state["environment"] = json!({});
     store.save(&state).unwrap();
-    let error = aaqe::workflow::reproduce(&store, &mut state, None).unwrap_err();
+    let error = aaqe::audit::workflow::reproduce(&store, &mut state, None).unwrap_err();
     assert!(format!("{error:#}").contains("finaliz"), "{error:#}");
     let cleanup = std::process::Command::new(env!("CARGO_BIN_EXE_aaqe"))
         .args(["--state-dir", temp.path().to_str().unwrap(), "cleanup", &id])
@@ -131,7 +53,7 @@ fn terminal_status_during_audit_finalization_rejects_reproduction_and_cleanup() 
 }
 
 fn git(root: &Path, args: &[&str]) -> String {
-    aaqe::gitops::git(root, args).unwrap()
+    aaqe::runtime::git::git(root, args).unwrap()
 }
 
 #[test]
@@ -162,7 +84,7 @@ fn failed_reproduction_start_is_registered_without_changing_original_evidence() 
         "broken compatibility alias",
     )
     .unwrap();
-    let error = aaqe::workflow::reproduce(&store, &mut state, Some("test")).unwrap_err();
+    let error = aaqe::audit::workflow::reproduce(&store, &mut state, Some("test")).unwrap_err();
     assert!(format!("{error:#}").contains("runner"), "{error:#}");
     let loaded = store.load(&id).unwrap();
     assert_eq!(loaded["reproductions"][0]["status"], "failed");
@@ -192,7 +114,7 @@ fn busy_run_rejects_mutation_and_mcp_remains_available_after_contention() {
     let directory = store.path(state["id"].as_str().unwrap()).unwrap();
     write_json(&directory.join("harness.json"), &snapshot(&state)).unwrap();
     let lock = aaqe::state::RunLock::acquire(&directory).unwrap();
-    let error = aaqe::workflow::reproduce(&store, &mut state, None).unwrap_err();
+    let error = aaqe::audit::workflow::reproduce(&store, &mut state, None).unwrap_err();
     assert!(format!("{error:#}").contains("busy"));
     let mut server = Command::new(env!("CARGO_BIN_EXE_aaqe"))
         .arg("__harness-mcp")

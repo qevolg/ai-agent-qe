@@ -33,7 +33,6 @@ Keep `~/.cargo/bin` in `PATH`. Alternatively, run `cargo build --release --locke
 
 Git, tmux and Codex run on the host. Product dependencies, builds, fixtures and tests run inside Docker; the host does not need the audited project's Java, Maven, Python, Node, Rust or test framework. Source installation and AAQE's own development tests have separate prerequisites below.
 
-If upgrading from the former Python implementation, uninstall it with `python3 -m pip uninstall ai-agent-qe`, install the Rust executable and check `command -v aaqe`. Saved runs remain compatible with reporting, reproduction and cleanup.
 
 ## Features
 
@@ -141,7 +140,7 @@ Exit codes: `0` means the command succeeded (a completed audit can contain confi
 
 **Where is `aaqe.yaml`?** AAQE does not create it during installation. It reads only `aaqe.yaml` in the **directory where you invoke the command**, without searching parent directories. An absent default file uses built-in settings; an explicitly specified missing `--config` file is an error.
 
-Start from the annotated [aaqe.yaml.example](aaqe.yaml.example), copy it into the audited project and fill in project-specific fields. A runnable Python/Compose example is available at [examples/minimal/](examples/minimal/README.md), including its own [aaqe.yaml](examples/minimal/aaqe.yaml). That example must live in a separate Git repository and be committed to its remote branch.
+Start from the annotated [aaqe.yaml.example](aaqe.yaml.example), copy it into the audited project and fill in the environment, test commands and behavior references from that project.
 
 ```bash
 # Use a configuration at a fixed location.
@@ -185,7 +184,13 @@ Environment fields are optional project inputs; the coordinator can discover or 
 
 Configuration is read before creating the audit Worktree, so an uncommitted local configuration can be used. Source/reference/Compose paths refer to the new Worktree. Relative YAML `state_dir` and `env_file` refer to the configuration directory. Environment precedence is project YAML, then explicit preparation input, then Explorer inference. Unknown YAML fields are rejected. Keep credentials in private files or environment variables.
 
-For dependency recovery, inline Compose, per-test baselines, probes, MCP budgets and exact replay rules, see the [detailed runtime reference (Chinese)](docs/runtime.md).
+Source is mounted read-only at `/workspace`; build output, caches and reports belong in `/aaqe-results` or dedicated volumes. `{result_dir}` in test commands and `AAQE_RESULT_DIR` identify each execution's writable output directory. Tests must generate fresh JUnit XML with exact `name` or `classname::name` identities. Missing, duplicate, skipped or inconsistent reports cannot confirm a defect.
+
+The coordinator uses MCP `inspect_environment`, `prepare_environment` and `execute_tests` for environment operations. Tool probes run in the Runner by default; `target: host` explicitly selects the host. SSH only reads inventory. Once ownership is recorded, the Compose definition is fixed. Dependency repair can append `setup` commands or replace the entire recipe with `replace_setup: true`. Setup runs as user `0` in the Runner; failed or interrupted installation stops the Runner, and preparation recovers that same environment.
+
+Idempotent setup recipes are saved in `environment/dependency-setup.json` and replayed during reproduction. They must work independently of generated tests. Preparing the environment again, revising upstream artifacts or rerunning tests invalidates current execution and Validator conclusions. Per-test `baseline` overrides the Explorer baseline; a nonempty project baseline takes priority. An explicit empty baseline cannot support confirmation. Selected test IDs can be rerun through `execute_tests` and then independently validated.
+
+Patches default to test directories. Mixed Rust files allow changes only inside top-level `#[cfg(test)] mod` blocks, preserving syntax outside them. Deletion, renames, links, binary patches and mode changes are rejected. Developer retries return complete replacement patches against the original base. The harness temporarily withdraws generated tests for baseline execution and then restores them.
 
 ## Reports, reproduction and cleanup
 
@@ -221,14 +226,14 @@ Reproduction verifies the recorded base commit, restores the Runner and saved de
 
 | Path | Responsibility |
 | --- | --- |
-| `src/cli.rs`, `src/config.rs` | Commands and validated configuration |
-| `src/harness*`, `src/mcp.rs` | Audit state machine, gates, MCP and recovery |
-| `src/codex.rs`, `src/tmux.rs`, `src/process.rs` | Codex transport, retained TUI and supervised processes |
-| `src/patchgate.rs`, `src/evidence.rs` | Production-code protection and JUnit checks |
-| `src/environment*`, `src/workflow.rs` | Docker execution, reproduction and cleanup |
-| `src/state*`, `src/reporting.rs` | Snapshots, locks, run names and reports |
-| `src/resources/` | Embedded roles, Skills and schemas |
-| `tests/`, `examples/minimal/` | Regression/integration tests and a runnable external-project example |
+| `src/main.rs`, `src/lib.rs`, `src/cli/` | Binary entry, module exports and commands |
+| `src/agents/` | Codex, MCP protocol and stage resources |
+| `src/audit/` | Agent/runtime interfaces, audit state machine, execution and replay |
+| `src/guards/` | Artifact contracts, production protection and JUnit checks |
+| `src/runtime/` | Docker Compose, probes, Git, processes and tmux |
+| `src/config.rs`, `src/state*`, `src/reporting.rs` | Configuration, snapshots, run locks and reports |
+| `resources/` | Embedded roles, Skills and schemas |
+| `tests/`, `tests/support/` | Program and cross-module integration tests, shared Rust test helpers |
 
 ## Development
 
@@ -240,13 +245,13 @@ cargo build --locked --release
 cargo package --locked --allow-dirty --target-dir target/package-check
 ```
 
-The ordinary suite uses real temporary Git repositories and tmux sessions with deterministic Codex/Docker boundary fixtures. It needs tmux and Python 3 for fixtures. The opt-in integration test uses real Docker containers and deterministic model responses:
+Unit tests live beside their `src` modules; `tests/` contains program and cross-module integration tests. All test code, subprocess doubles and temporary audited projects use Rust. The ordinary suite needs Rust, Git and tmux. `tests/support/worker.rs` is a Cargo example target built for tests and excluded from `cargo install`. The opt-in Docker test uses real containers with deterministic Rust model responses:
 
 ```bash
-cargo test --locked --test workflow real_docker_workflow_reproduction_and_owned_cleanup -- --ignored --nocapture
+cargo test --locked --all-targets real_docker_workflow_reproduction_and_owned_cleanup -- --ignored --nocapture
 ```
 
-It covers file/inline Compose, readiness and dependency repair, protected patches, baseline/target execution, JUnit, selected reruns, reproduction and owned cleanup. These fixtures validate orchestration; they do not establish an actual-model business-product audit. See [validation records](docs/validation.md) for evidence and limits.
+It covers file/inline Compose, readiness and dependency repair, protected patches, baseline/target execution, JUnit, selected reruns, reproduction and owned cleanup. These fixtures validate orchestration; they do not establish an actual-model business-product audit.
 
 ## License
 

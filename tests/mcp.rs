@@ -1,4 +1,5 @@
-use aaqe::{config::Config, gitops::git, state::read_json, tmux::cleanup_tmux};
+mod support;
+use aaqe::{config::Config, runtime::git::git, runtime::tmux::cleanup_tmux, state::read_json};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -12,8 +13,8 @@ fn repo(path: &Path) {
     git(path, &["config", "user.name", "Test"]).unwrap();
     git(path, &["config", "user.email", "test@example.invalid"]).unwrap();
     fs::write(
-        path.join("app.py"),
-        "def bounded_value(n):\n    return min(n,10)\n",
+        path.join("app.rs"),
+        "pub fn bounded_value(n: i32) -> i32 { n.min(10) }\n",
     )
     .unwrap();
     git(path, &["add", "."]).unwrap();
@@ -39,19 +40,12 @@ fn native_coordinator_retains_one_interactive_tui_and_fresh_background_stages() 
     repo(temp.path());
     let config = Config {
         state_dir: temp.path().join("runs"),
-        codex_command: vec![
-            "python3".into(),
-            format!(
-                "{}/tests/fixtures/scripted_codex.py",
-                env!("CARGO_MANIFEST_DIR")
-            ),
-            "--loop-test".into(),
-        ],
+        codex_command: support::codex(&["--loop-test"]),
         run_timeout: 3,
         ..Config::default()
     };
     let _cleanup = Cleanup(config.state_dir.clone());
-    let state = aaqe::workflow::run_audit("audit", temp.path(), &config, &|_| {}).unwrap();
+    let state = aaqe::audit::workflow::run_audit("audit", temp.path(), &config, &|_| {}).unwrap();
     let directory = config.state_dir.join(state["id"].as_str().unwrap());
     assert_eq!(state["status"], "completed", "{state}");
     assert!(directory.join("report.md").is_file());
@@ -121,12 +115,12 @@ fn mcp_protocol_errors_do_not_pollute_stdout() {
     repo(temp.path());
     let config = Config {
         state_dir: temp.path().join("runs"),
-        codex_command: vec!["true".into()],
+        codex_command: support::success(),
         run_timeout: 10,
         ..Config::default()
     };
     let _cleanup = Cleanup(config.state_dir.clone());
-    let state = aaqe::workflow::run_audit("audit", temp.path(), &config, &|_| {}).unwrap();
+    let state = aaqe::audit::workflow::run_audit("audit", temp.path(), &config, &|_| {}).unwrap();
     assert_eq!(state["status"], "blocked");
     let directory = config.state_dir.join(state["id"].as_str().unwrap());
     let mut child = Command::new(env!("CARGO_BIN_EXE_aaqe"))
@@ -192,7 +186,7 @@ fn cancelling_or_timing_out_the_coordinator_stops_separate_stage_processes() {
         let runs = temp.path().join("runs");
         let _cleanup = Cleanup(runs.clone());
         let config = temp.path().join("test-config.yaml");
-        fs::write(&config,serde_json::to_string(&json!({"state_dir":runs,"codex":{"command":["python3",format!("{}/tests/fixtures/scripted_codex.py",env!("CARGO_MANIFEST_DIR")),"--cancel-test",if cancellation == "kill-mcp" {"--kill-mcp-test"}else{"--normal-mcp-test"}]},"loop":{"timeout":if cancellation == "timeout" {3} else {30}}})).unwrap()).unwrap();
+        fs::write(&config,serde_json::to_string(&json!({"state_dir":runs,"codex":{"command":support::codex(&["--cancel-test",if cancellation == "kill-mcp" {"--kill-mcp-test"}else{"--normal-mcp-test"}])},"loop":{"timeout":if cancellation == "timeout" {3} else {30}}})).unwrap()).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_aaqe"))
             .current_dir(temp.path())
             .args(["--config", config.to_str().unwrap(), "run", "audit"])
@@ -287,7 +281,7 @@ fn cancelling_or_timing_out_the_coordinator_stops_separate_stage_processes() {
 
 #[test]
 fn environment_tools_advertise_validated_operation_inputs() {
-    let tools = aaqe::mcp::tools();
+    let tools = aaqe::agents::mcp::tools();
     for (name, args) in [
         (
             "inspect_environment",

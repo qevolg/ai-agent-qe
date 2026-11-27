@@ -1,5 +1,7 @@
+mod support;
 use aaqe::reporting::{generate_report, refresh_report};
-use serde_json::json;
+use aaqe::state::read_json;
+use serde_json::{Value, json};
 use std::fs;
 
 #[test]
@@ -203,4 +205,27 @@ fn absent_analysis_and_examined_empty_scope_have_different_summary_results() {
     let examined = fs::read_to_string(temp.path().join("report.md")).unwrap();
     assert!(examined.contains("已检查范围内未发现缺陷候选"));
     assert!(examined.contains("不代表产品全面通过"));
+}
+
+#[test]
+fn reports_refresh_without_overwriting_original_evidence_or_verdicts() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut state = json!({"id":"legacy-run", "prompt":"检查模块", "status":"completed", "stages":[], "reproductions":[]});
+    let execution = json!({"baseline":[],"tests":[]});
+    let verdicts = json!([]);
+    aaqe::reporting::generate_report(temp.path(), &state, &json!({}), &execution, &verdicts)
+        .unwrap();
+    state["tmux_cleaned_at"] = json!("2026-11-25T00:00:00+00:00");
+    state["reproductions"] = json!([{"at":"now", "records":[]}]);
+    aaqe::reporting::refresh_report(temp.path(), &state).unwrap();
+    let report: Value = read_json(&temp.path().join("report.json")).unwrap();
+    assert_eq!(report["execution"], execution);
+    assert_eq!(report["verdicts"], verdicts);
+    assert_eq!(report["schema_version"], "1.0");
+    let markdown = fs::read_to_string(temp.path().join("report.md")).unwrap();
+    assert!(
+        markdown.contains("检查模块")
+            && markdown.contains("本轮 tmux 会话已清理")
+            && markdown.contains("复现记录")
+    );
 }

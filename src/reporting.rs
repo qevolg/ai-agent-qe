@@ -1,5 +1,5 @@
 use crate::{
-    environment::strings,
+    runtime::compose::strings,
     state::{HarnessSnapshot, now, read_json, write_json},
 };
 use anyhow::Result;

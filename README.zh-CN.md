@@ -33,7 +33,6 @@ aaqe doctor
 
 Git、tmux 和 Codex 在宿主机运行。被审计项目的依赖、构建、fixture 和测试全部在 Docker 内执行，宿主机无需安装该项目所需的 Java、Maven、Python、Node、Rust 或测试框架。源码安装以及 AAQE 自身开发测试的依赖另见文末。
 
-旧 Python 版用户可先运行 `python3 -m pip uninstall ai-agent-qe`，再安装 Rust 版，并用 `command -v aaqe` 检查入口。已有运行记录继续支持查看报告、复现和清理。
 
 ## 功能
 
@@ -141,7 +140,7 @@ aaqe [--config PATH] [--state-dir PATH] [COMMAND]
 
 **`aaqe.yaml` 在哪里？** 安装不会自动生成配置。默认只读取**运行命令时所在目录**下的 `aaqe.yaml`，不向上查找仓库根目录。默认文件不存在时使用内置值；显式 `--config` 指定的文件不存在时会报错。
 
-根目录提供带中文注释的 [aaqe.yaml.example](aaqe.yaml.example)，可复制到被审计项目并按需填写。完整的 Python/Compose 最小示例在 [examples/minimal/](examples/minimal/README.md)，配置见其 [aaqe.yaml](examples/minimal/aaqe.yaml)。运行该示例前需复制到独立 Git 仓库，并提交到远程分支。
+根目录提供带中文注释的 [aaqe.yaml.example](aaqe.yaml.example)，可复制到被审计项目并按需填写。环境镜像、测试命令和预期行为应来自该项目。
 
 ```bash
 # 显式指定配置文件。
@@ -185,7 +184,13 @@ aaqe --state-dir /path/to/runs report 20261125081514-ab12cd34
 
 配置在创建审计 Worktree 前读取，可使用本地未提交的操作配置。源码、参考文件和 Compose 路径指向新 Worktree；YAML 中相对 `state_dir`、`env_file` 以配置文件目录解析。环境字段优先级为项目 YAML、显式准备参数、Explorer 推断。未知 YAML 字段会被拒绝。凭据放在私有文件或环境变量中。
 
-容器依赖恢复、inline Compose、每测试基线、探测、MCP 预算及精确复现规则见[详细运行机制](docs/runtime.md)。
+源码挂载到只读 `/workspace`；编译产物、缓存与测试结果写入 `/aaqe-results` 或专用卷。测试命令中的 `{result_dir}` 和环境变量 `AAQE_RESULT_DIR` 指向本次执行独立的可写目录。每个测试须生成本轮 JUnit XML，并声明精确的 `name` 或 `classname::name`；缺失、重复、跳过或与进程结果不符的报告不能确认缺陷。
+
+主调度通过 MCP `inspect_environment`、`prepare_environment`、`execute_tests` 探测和准备环境。工具探测默认在 Runner 内执行；`target: host` 显式选择宿主机。SSH 仅用于只读清单，不用于部署。已有资源归属记录后 Compose 定义锁定；依赖修复可提交 `setup` 追加命令，或使用 `replace_setup: true` 替换完整配方。安装在 Runner 中以用户 `0` 执行，失败或中断后停止 Runner，后续准备恢复同一环境。
+
+安装配方保存在 `environment/dependency-setup.json`，复现时重放；步骤应幂等，且独立于生成的测试。重新准备环境、替换上游产物或重跑测试会使当前执行及 Validator 结论失效。每测试 `baseline` 覆盖 Explorer 基线，非空项目全局 `baseline` 优先；显式空基线不能支持确认。`execute_tests` 可选择测试 ID 重跑，随后需要独立验证。
+
+默认仅接受测试目录补丁。Rust 混合源码文件仅允许修改顶层 `#[cfg(test)] mod`，区外语法必须保持一致；删除、重命名、符号链接、二进制及模式修改会被拒绝。Developer 重试须提交相对于原始基准的完整替换补丁；基线执行时临时撤回该补丁，随后恢复。
 
 ## 报告、复现与清理
 
@@ -221,14 +226,14 @@ aaqe cleanup RUN_ID
 
 | 路径 | 职责 |
 | --- | --- |
-| `src/cli.rs`、`src/config.rs` | 命令与配置校验 |
-| `src/harness*`、`src/mcp.rs` | 审计状态机、门禁、MCP 与恢复 |
-| `src/codex.rs`、`src/tmux.rs`、`src/process.rs` | Codex 传输、保留主窗口与进程监督 |
-| `src/patchgate.rs`、`src/evidence.rs` | 生产代码保护与 JUnit 检查 |
-| `src/environment*`、`src/workflow.rs` | Docker 执行、复现与清理 |
-| `src/state*`、`src/reporting.rs` | 快照、互斥锁、运行命名和报告 |
-| `src/resources/` | 内嵌角色、Skill 和 Schema |
-| `tests/`、`examples/minimal/` | 回归／集成测试及可运行的外部项目示例 |
+| `src/main.rs`、`src/lib.rs`、`src/cli/` | 二进制入口、模块导出与命令处理 |
+| `src/agents/` | Codex、MCP 协议与统一阶段资源定义 |
+| `src/audit/` | 调度接口、审计状态机、执行门禁与复现 |
+| `src/guards/` | 产物契约、生产代码保护与 JUnit 检查 |
+| `src/runtime/` | Docker Compose、环境探测、Git、进程与 tmux |
+| `src/config.rs`、`src/state*`、`src/reporting.rs` | 配置、快照、运行锁与报告 |
+| `resources/` | 二进制内嵌角色、Skill 和 Schema |
+| `tests/`、`tests/support/` | 程序和跨模块集成测试、共享 Rust 测试辅助程序 |
 
 ## 开发
 
@@ -240,13 +245,13 @@ cargo build --locked --release
 cargo package --locked --allow-dirty --target-dir target/package-check
 ```
 
-普通测试使用真实临时 Git 仓库和 tmux，会在 Codex／Docker 边界使用确定性夹具；夹具需要 tmux 和 Python 3。真实 Docker 集成测试需显式启用，模型输出仍使用确定性夹具：
+单元测试位于对应 `src` 模块旁，`tests/` 保留程序及跨模块集成测试。所有测试代码、子进程替身和临时被测项目均使用 Rust。普通测试需要 Rust、Git 和 tmux；`tests/support/worker.rs` 是 Cargo 的测试辅助 example 目标，测试时构建，不随 `cargo install` 安装。真实 Docker 测试需显式启用，模型响应由 Rust 辅助程序生成：
 
 ```bash
-cargo test --locked --test workflow real_docker_workflow_reproduction_and_owned_cleanup -- --ignored --nocapture
+cargo test --locked --all-targets real_docker_workflow_reproduction_and_owned_cleanup -- --ignored --nocapture
 ```
 
-该测试覆盖文件／inline Compose、就绪检查、依赖恢复、受保护补丁、基线与目标测试、JUnit、选中重跑、复现和本轮资源清理。夹具验证调度机制，不代表真实模型已完成业务产品审计。已有验证证据和限制见[验证记录](docs/validation.md)。
+该测试覆盖文件／inline Compose、就绪检查、依赖恢复、受保护补丁、基线与目标测试、JUnit、选中重跑、复现和本轮资源清理。夹具验证调度机制，不代表真实模型已完成业务产品审计。
 
 ## 许可证
 

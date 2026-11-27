@@ -1,9 +1,12 @@
+mod support;
 use aaqe::{
+    audit::harness::AuditHarness,
+    audit::{
+        interfaces::{AuditAgent, TestRuntime},
+        workflow::run_audit_with,
+    },
     config::Config,
-    gitops::git,
-    harness::AuditHarness,
     state::read_json,
-    workflow::{AuditAgent, TestRuntime, run_audit_with},
 };
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
@@ -13,29 +16,7 @@ use std::{
 };
 
 fn repository(directory: &Path) -> PathBuf {
-    let remote = directory.join("remote.git");
-    git(directory, &["init", "--bare", remote.to_str().unwrap()]).unwrap();
-    let root = directory.join("repo");
-    fs::create_dir(&root).unwrap();
-    for args in [
-        vec!["init", "-b", "main"],
-        vec!["config", "user.name", "Test"],
-        vec!["config", "user.email", "test@example.invalid"],
-    ] {
-        git(&root, &args).unwrap();
-    }
-    fs::write(root.join("app.py"), "def value():\n    return 1\n").unwrap();
-    fs::create_dir(root.join("src")).unwrap();
-    fs::write(root.join("src/lib.rs"), "pub fn value() -> i32 { 1 }\n").unwrap();
-    for args in [
-        vec!["add", "."],
-        vec!["commit", "-m", "base"],
-        vec!["remote", "add", "origin", remote.to_str().unwrap()],
-        vec!["push", "origin", "main"],
-    ] {
-        git(&root, &args).unwrap();
-    }
-    root
+    support::repository(directory, true)
 }
 
 struct Agent {
@@ -87,12 +68,12 @@ impl AuditAgent for Agent {
                 let workspace =
                     PathBuf::from(harness.status()["workspace"]["path"].as_str().unwrap());
                 assert_eq!(
-                    fs::read_to_string(workspace.join("tests/test_generated.py"))?,
-                    "assert False\n"
+                    fs::read_to_string(workspace.join("tests/generated.rs"))?,
+                    "#[test] fn regression() { assert!(false); }\n"
                 );
                 assert_eq!(
-                    fs::read_to_string(workspace.join("app.py"))?,
-                    "def value():\n    return 1\n"
+                    fs::read_to_string(workspace.join("app.rs"))?,
+                    "pub fn value() -> i32 { 1 }\n"
                 );
                 return harness.finish("blocked", "replacement rejected; prior patch retained");
             }
@@ -105,7 +86,7 @@ impl AuditAgent for Agent {
             let directory = PathBuf::from(status["state"]["config"]["state_dir"].as_str().unwrap())
                 .join(status["state"]["id"].as_str().unwrap());
             let patch = fs::read_to_string(directory.join("tests.diff"))?;
-            let result = aaqe::process::run(
+            let result = aaqe::runtime::process::run(
                 &["git".into(), "apply".into(), "--reverse".into(), "-".into()],
                 Some(&root),
                 10,
@@ -128,13 +109,13 @@ impl AuditAgent for Agent {
             let root = PathBuf::from(status["workspace"]["path"].as_str().unwrap());
             let directory = harness.directory.clone();
             let previous = status["state"]["applied_patch"].as_str().unwrap();
-            let replacement = "--- /dev/null\n+++ b/tests/test_generated.py\n@@ -0,0 +1,2 @@\n+# replacement\n+assert False\n";
+            let replacement = "--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1,2 @@\n+// replacement\n+#[test] fn regression() { assert!(false); }\n";
             aaqe::state::write_json(
                 &directory.join("patch-transition.json"),
                 &json!({"previous":previous,"replacement":if self.mode=="loss-replacement" {json!(replacement)}else{Value::Null}}),
             )?;
             if self.mode != "loss-recovered" {
-                let reversed = aaqe::process::run(
+                let reversed = aaqe::runtime::process::run(
                     &["git".into(), "apply".into(), "--reverse".into(), "-".into()],
                     Some(&root),
                     10,
@@ -143,7 +124,7 @@ impl AuditAgent for Agent {
                 assert_eq!(reversed.returncode, 0);
             }
             if self.mode == "loss-replacement" {
-                aaqe::patchgate::PatchGate::new(
+                aaqe::guards::patch::PatchGate::new(
                     &root,
                     &harness.config.test_paths,
                     status["workspace"]["commit"].as_str(),
@@ -169,7 +150,7 @@ impl AuditAgent for Agent {
             assert_eq!(result["status"], "failed", "{result}");
             assert_eq!(
                 harness.status()["artifacts"]["code-explorer"]["references"][0]["path"],
-                "app.py"
+                "app.rs"
             );
         }
         if self.mode == "revisit" {
@@ -217,7 +198,7 @@ impl AuditAgent for Agent {
         }
         let mut output = match stage {
             "code-explorer" => {
-                json!({"summary":"scope","scope":["app.py"],"references":[{"id":"ref","path":"app.py","line":1,"claim":"one"}],"uncertainties":[],"environment":{"compose_files":[],"services":[],"runner_service":"runner","runner_workdir":"/workspace","external_containers":[],"readiness_timeout":30},"baseline":[["baseline"]]})
+                json!({"summary":"scope","scope":["app.rs"],"references":[{"id":"ref","path":"app.rs","line":1,"claim":"one"}],"uncertainties":[],"environment":{"compose_files":[],"services":[],"runner_service":"runner","runner_workdir":"/workspace","external_containers":[],"readiness_timeout":30},"baseline":[["baseline"]]})
             }
             "bug-hunter" => {
                 json!({"summary":"candidate","candidates":[{"id":"bug","title":"wrong value","expected":"two","observed":"one","trigger":"value()","evidence_ids":["ref"],"confidence":"high"}],"excluded_areas":[]})
@@ -226,7 +207,7 @@ impl AuditAgent for Agent {
                 json!({"summary":"plan","plans":[{"candidate_id":"bug","test_id":"test","expectation":"two","oracle":"documented behavior","steps":["call"],"reproduction":["rerun"],"blocked_reason":null}]})
             }
             "test-developer" => {
-                json!({"summary":"patch","patch":if self.mode=="rollback" && retry {"--- a/app.py\n+++ b/app.py\n@@ -1,2 +1,2 @@\n def value():\n-    return 1\n+    return 2\n"} else if retry {"--- /dev/null\n+++ b/tests/test_generated.py\n@@ -0,0 +1,2 @@\n+# repaired fixture\n+assert False\n"} else {"--- /dev/null\n+++ b/tests/test_generated.py\n@@ -0,0 +1 @@\n+assert False\n"},"tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[]}],"limitations":[]})
+                json!({"summary":"patch","patch":if self.mode=="rollback" && retry {"--- a/app.rs\n+++ b/app.rs\n@@ -1 +1 @@\n-pub fn value() -> i32 { 1 }\n+pub fn value() -> i32 { 2 }\n"} else if retry {"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1,2 @@\n+// repaired regression\n+#[test] fn regression() { assert!(false); }\n"} else {"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1 @@\n+#[test] fn regression() { assert!(false); }\n"},"tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[]}],"limitations":[]})
             }
             "test-validator" => {
                 let evidence = if self.mode == "stale" {
@@ -257,7 +238,7 @@ impl AuditAgent for Agent {
         }
         if retry && stage == "code-explorer" {
             if self.mode == "generated-reference" {
-                output["references"][0]["path"] = json!("tests/test_generated.py");
+                output["references"][0]["path"] = json!("tests/generated.rs");
             }
             if self.mode == "line-reference" {
                 output["references"][0]["path"] = json!("src/lib.rs");
@@ -394,7 +375,7 @@ fn coordinator_loss_during_baseline_recovers_the_generated_test_patch() {
     assert_eq!(state["status"], "blocked");
     assert!(
         Path::new(state["workspace"]["path"].as_str().unwrap())
-            .join("tests/test_generated.py")
+            .join("tests/generated.rs")
             .exists()
     );
     assert!(state["baseline_restore_patch"].is_null());
@@ -412,8 +393,8 @@ fn assert_transition_recovery(mode: &'static str) {
     assert_eq!(state["status"], "blocked");
     let workspace = Path::new(state["workspace"]["path"].as_str().unwrap());
     assert_eq!(
-        fs::read_to_string(workspace.join("tests/test_generated.py")).unwrap(),
-        "assert False\n"
+        fs::read_to_string(workspace.join("tests/generated.rs")).unwrap(),
+        "#[test] fn regression() { assert!(false); }\n"
     );
     let artifact = read_json(&directory.join("artifacts/test-developer.json")).unwrap();
     assert_eq!(artifact["patch"], state["applied_patch"]);
@@ -636,7 +617,7 @@ fn verdict_requires_every_test_and_only_its_applicable_baseline() {
     let artifact = json!({"verdicts":[{"candidate_id":"bug","test_ids":["a","b"],"status":"confirmed","rationale":"both","evidence":["/a/execution.json"]}]});
     let mut execution = json!({"baseline":[{"for_test_id":"a","result":{"returncode":0}}],"tests":[{"test_id":"a","directory":"/a","junit":{"complete":true,"cases":[{"status":"failed"}]}}]});
     assert_eq!(
-        aaqe::workflow::grounded_verdicts(&artifact, &execution)[0]["status"],
+        aaqe::audit::workflow::grounded_verdicts(&artifact, &execution)[0]["status"],
         "blocked"
     );
     execution["baseline"]
@@ -645,7 +626,7 @@ fn verdict_requires_every_test_and_only_its_applicable_baseline() {
         .push(json!({"for_test_id":"b","result":{"returncode":1}}));
     let single = json!({"verdicts":[{"candidate_id":"bug","test_ids":["a"],"status":"confirmed","rationale":"a","evidence":["/a/execution.json"]}]});
     assert_eq!(
-        aaqe::workflow::grounded_verdicts(&single, &execution)[0]["status"],
+        aaqe::audit::workflow::grounded_verdicts(&single, &execution)[0]["status"],
         "confirmed"
     );
 }
@@ -727,7 +708,7 @@ impl AuditAgent for IndependentAgent {
         );
         assert!(
             Path::new(status["workspace"]["path"].as_str().unwrap())
-                .join("tests/test_generated.py")
+                .join("tests/generated.rs")
                 .is_file()
         );
         assert_eq!(
@@ -1072,7 +1053,7 @@ fn baseline_patch_restore_failure_stops_before_empty_baseline_target_and_recover
             assert!(status["state"]["baseline_restore_patch"].is_string());
             assert_eq!(status["execution"]["baseline"].as_array().unwrap().len(), 1);
             let workspace = PathBuf::from(status["workspace"]["path"].as_str().unwrap());
-            fs::remove_file(workspace.join("tests/test_generated.py"))?;
+            fs::remove_file(workspace.join("tests/generated.rs"))?;
             h.finish(
                 "blocked",
                 "remove injected obstruction and recover accepted patch",
@@ -1096,7 +1077,7 @@ fn baseline_patch_restore_failure_stops_before_empty_baseline_target_and_recover
                 // conflicting allowed test file so protected reapplication fails.
                 fs::create_dir_all(self.root.join("tests"))?;
                 fs::write(
-                    self.root.join("tests/test_generated.py"),
+                    self.root.join("tests/generated.rs"),
                     "# restoration obstruction\n",
                 )?;
             }
@@ -1129,9 +1110,9 @@ fn baseline_patch_restore_failure_stops_before_empty_baseline_target_and_recover
     assert!(state["baseline_restore_patch"].is_null());
     assert_eq!(
         fs::read_to_string(
-            Path::new(state["workspace"]["path"].as_str().unwrap()).join("tests/test_generated.py")
+            Path::new(state["workspace"]["path"].as_str().unwrap()).join("tests/generated.rs")
         )
         .unwrap(),
-        "assert False\n"
+        "#[test] fn regression() { assert!(false); }\n"
     );
 }

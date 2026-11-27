@@ -101,7 +101,7 @@ impl Config {
         if data.is_null() || data == json!(false) || data == json!("") || data == json!([]) {
             data = json!({});
         }
-        let schema: Value = serde_json::from_str(include_str!("resources/schemas/config.json"))?;
+        let schema: Value = serde_json::from_str(include_str!("../resources/schemas/config.json"))?;
         let validator = jsonschema::validator_for(&schema)
             .map_err(|e| anyhow::anyhow!("Invalid configuration schema: {e}"))?;
         if let Err(error) = validator.validate(&data) {
@@ -163,3 +163,7 @@ impl Config {
         Ok(config)
     }
 }
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod tests;
