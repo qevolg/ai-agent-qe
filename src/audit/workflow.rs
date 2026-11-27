@@ -1,7 +1,6 @@
 use crate::{
     agents::codex::Codex,
     config::Config,
-    guards::junit::parse_junit,
     guards::patch::PatchGate,
     reporting::refresh_report,
     runtime::compose::{ComposeEnvironment, strings},
@@ -19,35 +18,15 @@ pub fn collect_test(runtime: &dyn TestRuntime, test: &Value, timeout: u64) -> Re
         test["id"].as_str().context("Missing test identity")?,
         timeout,
     )?;
-    let report = Path::new(
-        record["directory"]
-            .as_str()
-            .context("Missing execution directory")?,
-    )
-    .join(test["report"].as_str().context("Missing JUnit report")?);
     record["candidate_id"] = test["candidate_id"].clone();
-    record["junit"] = parse_junit(&report, &strings(&test["expected_names"]));
-    let failed = record["junit"]["cases"]
-        .as_array()
-        .is_some_and(|cases| cases.iter().any(|c| c["status"] == "failed"));
-    let code = record["result"]["returncode"].as_i64().unwrap_or(127);
-    let error = if record["result"]["timed_out"] == true
-        || [124, 125, 126, 127, 137, 143].contains(&code)
-        || code < 0
-    {
-        Some("execution_interrupted_or_start_failed")
-    } else if (code != 0) != failed {
-        Some("process_and_target_results_disagree")
-    } else {
-        None
-    };
-    if let Some(error) = error {
-        record["junit"]["complete"] = json!(false);
-        record["junit"]["errors"]
-            .as_array_mut()
-            .context("Invalid JUnit result")?
-            .push(json!(error));
-    }
+    let code = record["result"]["returncode"].as_i64();
+    let complete = code
+        .is_some_and(|code| code >= 0 && ![124, 125, 126, 127, 137, 143].contains(&code))
+        && record["result"]["timed_out"] != true;
+    record["evidence"] = json!({
+        "complete": complete,
+        "error": if complete { None } else { Some("execution_interrupted_or_start_failed") }
+    });
     write_json(
         &Path::new(record["directory"].as_str().unwrap()).join("execution.json"),
         &record,
@@ -70,7 +49,10 @@ pub fn grounded_verdicts(artifact: &Value, execution: &Value) -> Value {
             .collect();
         let complete = !ids.is_empty()
             && supporting.len() == ids.len()
-            && supporting.iter().all(|r| r["junit"]["complete"] == true);
+            && supporting.iter().all(|record| {
+                record["evidence"]["complete"] == true
+                    || (record["evidence"].is_null() && record["junit"]["complete"] == true)
+            });
         let healthy = ids.iter().all(|id| {
             let applicable: Vec<_> = baseline
                 .iter()
@@ -81,7 +63,7 @@ pub fn grounded_verdicts(artifact: &Value, execution: &Value) -> Value {
                     .iter()
                     .all(|r| r["result"]["returncode"] == 0 && r["result"]["timed_out"] != true)
         });
-        let failed = supporting.iter().any(|r| {
+        let legacy_failed = supporting.iter().any(|r| {
             r["junit"]["cases"]
                 .as_array()
                 .is_some_and(|cases| cases.iter().any(|c| c["status"] == "failed"))
@@ -98,14 +80,31 @@ pub fn grounded_verdicts(artifact: &Value, execution: &Value) -> Value {
             .collect();
         if verdict["status"] == "confirmed" || verdict["status"] == "not_reproduced" {
             let evidence = strings(&verdict["evidence"]);
+            let assessment = &verdict["assessment"];
+            let legacy = supporting.iter().all(|record| record["evidence"].is_null());
+            let assertion_failed =
+                assessment["assertion_failed"] == true || (legacy && legacy_failed);
+            let assessed = (assessment["executed"] == true
+                && assessment["infrastructure_failure"] == false)
+                || (legacy && assessment.is_null());
             let valid = complete
+                && assessed
                 && healthy
                 && !evidence.is_empty()
                 && evidence.iter().all(|p| allowed.contains(p))
                 && (if verdict["status"] == "confirmed" {
-                    failed
+                    assertion_failed
+                        && supporting.iter().any(|record| {
+                            record["result"]["returncode"]
+                                .as_i64()
+                                .is_some_and(|code| code != 0)
+                                || legacy
+                        })
                 } else {
-                    !failed
+                    !assertion_failed
+                        && supporting
+                            .iter()
+                            .all(|record| record["result"]["returncode"] == 0 || legacy)
                 });
             if !valid {
                 verdict["agent_status"] = verdict["status"].clone();
@@ -201,11 +200,12 @@ pub fn reproduce(store: &Store, state: &mut Value, case_id: Option<&str>) -> Res
         .cloned()
         .collect();
     ensure!(!tests.is_empty(), "Unknown test ID");
-    let root = Path::new(
+    let root_path = std::path::PathBuf::from(
         state["workspace"]["path"]
             .as_str()
             .context("Missing saved worktree")?,
     );
+    let root = root_path.as_path();
     let gate = PatchGate::new(
         root,
         &config.test_paths,
@@ -278,6 +278,48 @@ pub fn reproduce(store: &Store, state: &mut Value, case_id: Option<&str>) -> Res
             save_attempt(state)?;
             gate.verify_worktree()?;
         }
+        if artifact["coverage"].is_object() {
+            state["reproductions"][entry]["phase"] = json!("coverage_measurement");
+            save_attempt(state)?;
+            let specification = &artifact["coverage"];
+            let record = runtime.execute_test(
+                &strings(&specification["command"]),
+                &format!("coverage-replay-{attempt}"),
+                config.test_timeout,
+            )?;
+            state["reproductions"][entry]["coverage"] = json!({"status":"blocked","record":record});
+            save_attempt(state)?;
+            let measurement = (|| -> Result<Value> {
+                let code = record["result"]["returncode"]
+                    .as_i64()
+                    .context("Coverage process has no exit status")?;
+                ensure!(
+                    record["result"]["timed_out"] != true && (0..=1).contains(&code),
+                    "Coverage measurement failed or timed out"
+                );
+                let mut measurement = crate::guards::coverage::read_coverage(
+                    root,
+                    Path::new(
+                        record["directory"]
+                            .as_str()
+                            .context("Missing coverage directory")?,
+                    ),
+                    specification,
+                )?;
+                gate.verify_worktree()?;
+                measurement["record"] = record;
+                Ok(measurement)
+            })();
+            match measurement {
+                Ok(measurement) => state["reproductions"][entry]["coverage"] = measurement,
+                Err(error) => {
+                    state["reproductions"][entry]["coverage"]["error"] =
+                        json!(format!("{error:#}"));
+                    return Err(error);
+                }
+            }
+            save_attempt(state)?;
+        }
         Ok(())
     })();
     state["reproductions"][entry]["status"] = json!(if crate::runtime::process::interrupted() {
@@ -300,8 +342,64 @@ pub fn reproduce(store: &Store, state: &mut Value, case_id: Option<&str>) -> Res
 
 #[cfg(test)]
 mod tests {
-    use super::grounded_verdicts;
+    use super::{collect_test, grounded_verdicts};
+    use crate::audit::interfaces::TestRuntime;
+    use anyhow::Result;
     use serde_json::json;
+
+    #[test]
+    fn execution_evidence_does_not_require_a_framework_report() {
+        struct Runtime(std::path::PathBuf);
+
+        impl TestRuntime for Runtime {
+            fn start(&self) -> Result<()> {
+                Ok(())
+            }
+
+            fn logs(&self) -> Result<()> {
+                Ok(())
+            }
+
+            fn execute_test(&self, _: &[String], id: &str, _: u64) -> Result<serde_json::Value> {
+                Ok(
+                    json!({"test_id":id,"directory":self.0,"result":{"returncode":1,"timed_out":false,"stdout":"regression executed: assertion failed","stderr":""}}),
+                )
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let record = collect_test(
+            &Runtime(directory.path().into()),
+            &json!({"id":"regression","candidate_id":"bug","command":["test"]}),
+            10,
+        )
+        .unwrap();
+        assert_eq!(record["evidence"]["complete"], true);
+        assert!(record.get("junit").is_none());
+        let artifact = json!({"verdicts":[{"candidate_id":"bug","test_ids":["regression"],"status":"confirmed","rationale":"assertion failed","assessment":{"executed":true,"assertion_failed":true,"infrastructure_failure":false},"evidence":[directory.path().join("execution.json")]}]});
+        let execution = json!({"baseline":[{"result":{"returncode":0}}],"tests":[record]});
+        assert_eq!(
+            grounded_verdicts(&artifact, &execution)[0]["status"],
+            "confirmed"
+        );
+        let mut invalid = artifact.clone();
+        invalid["verdicts"][0]["assessment"]["infrastructure_failure"] = json!(true);
+        assert_eq!(
+            grounded_verdicts(&invalid, &execution)[0]["status"],
+            "blocked"
+        );
+        for assessment in [
+            serde_json::Value::Null,
+            json!({"executed":false,"assertion_failed":true,"infrastructure_failure":false}),
+            json!({"executed":true,"assertion_failed":false,"infrastructure_failure":false}),
+        ] {
+            invalid["verdicts"][0]["assessment"] = assessment;
+            assert_eq!(
+                grounded_verdicts(&invalid, &execution)[0]["status"],
+                "blocked"
+            );
+        }
+    }
 
     #[test]
     fn execution_gate_requires_real_matching_failure_and_healthy_baseline() {

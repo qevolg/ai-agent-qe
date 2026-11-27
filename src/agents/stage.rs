@@ -26,6 +26,7 @@ impl Stage {
             Self::Validator => "test-validator",
         }
     }
+
     pub fn parse(name: &str) -> Result<Self> {
         Self::ALL
             .into_iter()

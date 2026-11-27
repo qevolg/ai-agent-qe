@@ -139,6 +139,17 @@
         },
         "minItems": 1
       }
+    },
+    "coverage_files": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
     }
   },
   "required": [

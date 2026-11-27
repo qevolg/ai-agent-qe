@@ -215,7 +215,7 @@ impl AuditAgent for Agent {
                 json!({"summary":"plan","plans":[{"candidate_id":"bug","test_id":"test","expectation":"two","oracle":"documented behavior","steps":["call"],"reproduction":["rerun"],"blocked_reason":null}]})
             }
             "test-developer" => {
-                json!({"summary":"patch","patch":if self.mode=="rollback" && retry {"--- a/app.rs\n+++ b/app.rs\n@@ -1 +1 @@\n-pub fn value() -> i32 { 1 }\n+pub fn value() -> i32 { 2 }\n"} else if retry {"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1,2 @@\n+// repaired regression\n+#[test] fn regression() { assert!(false); }\n"} else {"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1 @@\n+#[test] fn regression() { assert!(false); }\n"},"tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[]}],"limitations":[]})
+                json!({"summary":"patch","coverage":{"command":["coverage"],"report":"coverage.json","files":["app.rs"]},"patch":if self.mode=="rollback" && retry {"--- a/app.rs\n+++ b/app.rs\n@@ -1 +1 @@\n-pub fn value() -> i32 { 1 }\n+pub fn value() -> i32 { 2 }\n"} else if retry {"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1,2 @@\n+// repaired regression\n+#[test] fn regression() { assert!(false); }\n"} else {"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1 @@\n+#[test] fn regression() { assert!(false); }\n"},"tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[]}],"limitations":[]})
             }
             "test-validator" => {
                 let evidence = if self.mode == "stale" {
@@ -235,7 +235,7 @@ impl AuditAgent for Agent {
                             .unwrap()
                     )
                 };
-                json!({"summary":"review","verdicts":[{"candidate_id":"bug","test_ids":["test"],"status":"confirmed","rationale":"target failed","evidence":[evidence]}]})
+                json!({"summary":"review","coverage_assessment":{"scope_valid":true,"measurement_valid":true,"meaningful_assertions":true,"rationale":"Reviewed native evidence and complete production scope"},"verdicts":[{"candidate_id":"bug","test_ids":["test"],"status":"confirmed","assessment":{"executed":true,"assertion_failed":true,"infrastructure_failure":false},"rationale":"target failed","evidence":[evidence]}]})
             }
             _ => bail!("unexpected stage"),
         };
@@ -267,12 +267,21 @@ impl TestRuntime for Runtime {
     fn start(&self) -> Result<()> {
         Ok(())
     }
+
     fn logs(&self) -> Result<()> {
         Ok(())
     }
+
     fn execute_test(&self, command: &[String], id: &str, _: u64) -> Result<Value> {
         let directory = self.root.join(uuid::Uuid::new_v4().simple().to_string());
         fs::create_dir_all(&directory)?;
+        if id.starts_with("coverage-") {
+            fs::write(directory.join("raw.txt"), "measurement")?;
+            fs::write(directory.join("coverage.json"), json!({"files":[{"path":"app.rs","covered_lines":1,"executable_lines":1}],"raw_reports":["raw.txt"]}).to_string())?;
+            return Ok(
+                json!({"test_id":id,"directory":directory,"result":{"returncode":0,"timed_out":false}}),
+            );
+        }
         let baseline = id.starts_with("baseline");
         if !baseline {
             fs::write(
@@ -436,14 +445,17 @@ fn assert_transition_recovery(mode: &'static str) {
 fn loss_after_patch_reversal_recovers_committed_evidence() {
     assert_transition_recovery("loss-upstream");
 }
+
 #[test]
 fn loss_after_replacement_application_recovers_committed_evidence() {
     assert_transition_recovery("loss-replacement");
 }
+
 #[test]
 fn revised_explorer_cannot_accept_generated_files() {
     assert_eq!(audit("generated-reference").1["status"], "completed");
 }
+
 #[test]
 fn revised_explorer_cannot_accept_lines_outside_the_base() {
     assert_eq!(audit("line-reference").1["status"], "completed");
@@ -487,6 +499,7 @@ impl AuditAgent for PreparationAgent {
         }
         Ok(out)
     }
+
     fn coordinate(&self, h: &mut AuditHarness<'_>) -> Result<()> {
         h.run_stage("code-explorer", "inspect")?;
         if self.mode == "prepare" {
@@ -585,6 +598,7 @@ impl AuditAgent for PreparationAgent {
         h.finish("blocked", "execution prerequisite does not block design")
     }
 }
+
 #[test]
 fn execution_blocker_is_optional_and_does_not_block_design() {
     let temp = tempfile::tempdir().unwrap();
@@ -608,6 +622,7 @@ fn execution_blocker_is_optional_and_does_not_block_design() {
     .unwrap();
     assert_eq!(state["stages"][2]["status"], "completed");
 }
+
 #[test]
 fn blocked_plans_offer_validator_and_record_dispatch_rejection() {
     let temp = tempfile::tempdir().unwrap();
@@ -630,6 +645,7 @@ fn blocked_plans_offer_validator_and_record_dispatch_rejection() {
     )
     .unwrap();
 }
+
 #[test]
 fn verdict_requires_every_test_and_only_its_applicable_baseline() {
     let artifact = json!({"verdicts":[{"candidate_id":"bug","test_ids":["a","b"],"status":"confirmed","rationale":"both","evidence":["/a/execution.json"]}]});
@@ -698,6 +714,7 @@ impl AuditAgent for IndependentAgent {
         }
         Ok(out)
     }
+
     fn coordinate(&self, h: &mut AuditHarness<'_>) -> Result<()> {
         for stage in ["code-explorer", "bug-hunter", "test-designer"] {
             assert_eq!(h.run_stage(stage, "inspect")?["status"], "completed");
@@ -739,6 +756,7 @@ impl AuditAgent for IndependentAgent {
         )
     }
 }
+
 #[test]
 fn failed_scoped_baseline_preserves_patch_and_executes_next_independent_test() {
     let temp = tempfile::tempdir().unwrap();
@@ -769,9 +787,11 @@ fn environment_operations_bound_runtime_timeouts_to_remaining_audit_budget() {
         fn start(&self) -> Result<()> {
             self.0.start()
         }
+
         fn logs(&self) -> Result<()> {
             self.0.logs()
         }
+
         fn execute_test(&self, c: &[String], id: &str, timeout: u64) -> Result<Value> {
             assert!(
                 timeout <= 10,
@@ -821,6 +841,7 @@ fn readiness_failure_locks_owned_spec_and_retries_same_runner() {
         ) -> Result<Value> {
             bail!("no worker expected")
         }
+
         fn coordinate(&self, h: &mut AuditHarness<'_>) -> Result<()> {
             let spec = json!({"runner_service":"runner","compose":{"services":{"runner":{"image":"fixture"}}},"readiness":[["ready"]]});
             assert_eq!(h.prepare_environment(None)?["status"], "failed");
@@ -860,9 +881,11 @@ fn readiness_failure_locks_owned_spec_and_retries_same_runner() {
             }
             Ok(())
         }
+
         fn logs(&self) -> Result<()> {
             Ok(())
         }
+
         fn execute_test(&self, _: &[String], _: &str, _: u64) -> Result<Value> {
             bail!("no test expected")
         }
@@ -915,6 +938,7 @@ fn saved_setup_retry_invalidates_validator_on_success_and_failure() {
             }
             Agent { mode: "normal" }.invoke(stage, w, d, i, p)
         }
+
         fn coordinate(&self, h: &mut AuditHarness<'_>) -> Result<()> {
             for stage in [
                 "code-explorer",
@@ -950,9 +974,11 @@ fn saved_setup_retry_invalidates_validator_on_success_and_failure() {
             }
             Ok(())
         }
+
         fn logs(&self) -> Result<()> {
             Ok(())
         }
+
         fn execute_test(&self, c: &[String], id: &str, t: u64) -> Result<Value> {
             self.runtime.execute_test(c, id, t)
         }
@@ -997,6 +1023,7 @@ fn trusted_global_baseline_overrides_test_specific_prerequisites() {
         ) -> Result<Value> {
             IndependentAgent.invoke(s, w, d, i, p)
         }
+
         fn coordinate(&self, h: &mut AuditHarness<'_>) -> Result<()> {
             for stage in [
                 "code-explorer",
@@ -1056,6 +1083,7 @@ fn baseline_patch_restore_failure_stops_before_empty_baseline_target_and_recover
             }
             Ok(output)
         }
+
         fn coordinate(&self, h: &mut AuditHarness<'_>) -> Result<()> {
             for stage in ["code-explorer", "bug-hunter", "test-designer"] {
                 assert_eq!(h.run_stage(stage, "inspect")?["status"], "completed");
@@ -1086,9 +1114,11 @@ fn baseline_patch_restore_failure_stops_before_empty_baseline_target_and_recover
         fn start(&self) -> Result<()> {
             Ok(())
         }
+
         fn logs(&self) -> Result<()> {
             Ok(())
         }
+
         fn execute_test(&self, command: &[String], id: &str, timeout: u64) -> Result<Value> {
             if id.starts_with("baseline-") {
                 // The generated file was removed for baseline execution. Create a

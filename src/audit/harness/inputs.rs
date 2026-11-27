@@ -37,13 +37,13 @@ pub(crate) fn artifact_summary(value: &Value) -> Value {
 }
 
 pub(crate) fn execution_summary(value: &Value) -> Value {
-    let mut view = json!({});
+    let mut view = json!({"coverage":value["coverage"]});
     for key in ["baseline", "tests"] {
         let items = value[key].as_array().cloned().unwrap_or_default();
         let preview: Vec<_> = items.iter().take(20).map(|item| {
             json!({"test_id":item["test_id"],"directory":item["directory"],
                 "result":{"returncode":item["result"]["returncode"],"timed_out":item["result"]["timed_out"],"stderr":item["result"]["stderr"].as_str().map(|text|excerpt(text,1024))},
-                "junit":{"complete":item["junit"]["complete"],"error":item["junit"]["error"]},"error":item["error"]})
+                "evidence":item["evidence"],"error":item["error"]})
         }).collect();
         view[key] =
             json!({"total":items.len(),"items":preview,"has_more":items.len()>preview.len()});

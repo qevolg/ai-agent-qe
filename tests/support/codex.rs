@@ -37,19 +37,24 @@ impl Client {
         assert!(reply.get("error").is_none(), "{reply}");
         reply["result"].clone()
     }
+
     fn tool(&mut self, name: &str, arguments: Value) -> Value {
         self.request("tools/call", json!({"name":name,"arguments":arguments}))
     }
 }
+
 fn flag(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == name)
 }
+
 fn argument<'a>(args: &'a [String], name: &str) -> &'a str {
     &args.windows(2).find(|a| a[0] == name).unwrap()[1]
 }
+
 fn load(path: &Path) -> Value {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
 }
+
 fn save(path: &Path, value: &Value) {
     fs::write(path, value.to_string()).unwrap();
 }
@@ -146,7 +151,7 @@ fn coordinate(args: &[String], directory: &Path, settings: BTreeMap<&str, &str>)
         assert_eq!(inspected["isError"], false, "{inspected}");
         let prepared=client.tool("prepare_environment",json!({"environment":{
             "compose":{"services":{"runner":{"image":super::project::image(),"command":["sleep","infinity"],"init":true}}},
-            "services":["runner"],"runner_service":"runner","runner_workdir":"/workspace","external_containers":[],"readiness_timeout":90,
+            "services":["runner"],"runner_service":"runner","runner_workdir":"/workspace","external_containers":[],"readiness_timeout":90,"setup":[["rustup","component","add","llvm-tools-preview"]],
             "readiness":[["rustc","--edition=2024","/workspace/run_tests.rs","-o","/aaqe-results/project-runner"],["/aaqe-results/project-runner","ready"]]
         }}));
         assert_eq!(prepared["isError"], true, "{prepared}");
@@ -186,7 +191,7 @@ fn coordinate(args: &[String], directory: &Path, settings: BTreeMap<&str, &str>)
             assert_eq!(rerun["isError"], false, "{rerun}");
             assert_eq!(
                 client.tool("status", json!({"section":"execution"}))["structuredContent"]["data"]
-                    ["tests"][0]["junit"]["complete"],
+                    ["tests"][0]["evidence"]["complete"],
                 true
             );
         }
@@ -336,10 +341,10 @@ pub fn run(args: &[String]) {
                     .map(|line| format!("+{line}\n"))
                     .collect::<String>()
             );
-            json!({"summary":"Add lower-bound regression","patch":patch,"tests":[{"id":"negative-input","candidate_id":"lower-bound","command":["/aaqe-results/project-runner","test","tests/regression.rs","{result_dir}/junit.xml"],"report":"junit.xml","expected_names":["test_negative"],"reproduction_commands":[]}],"limitations":[]})
+            json!({"summary":"Add lower-bound regression","coverage":{"command":["/aaqe-results/project-runner","coverage","{result_dir}"],"report":"coverage.json","files":["app.rs"]},"patch":patch,"tests":[{"id":"negative-input","candidate_id":"lower-bound","command":["/aaqe-results/project-runner","test","tests/regression.rs","{result_dir}/junit.xml"],"report":"junit.xml","expected_names":["test_negative"],"reproduction_commands":[]}],"limitations":[]})
         }
         "test-validator" => {
-            json!({"summary":"Assertion demonstrates lower-bound defect","verdicts":[{"candidate_id":"lower-bound","test_ids":["negative-input"],"status":"confirmed","rationale":"Baseline passes; regression observes -1 instead of zero","evidence":[Path::new(inputs["execution"]["tests"][0]["directory"].as_str().unwrap()).join("execution.json")]}]})
+            json!({"summary":"Assertion demonstrates lower-bound defect","coverage_assessment":{"scope_valid":true,"measurement_valid":true,"meaningful_assertions":true,"rationale":"Reviewed native evidence and complete production scope"},"verdicts":[{"candidate_id":"lower-bound","test_ids":["negative-input"],"status":"confirmed","assessment":{"executed":true,"assertion_failed":true,"infrastructure_failure":false},"rationale":"Baseline passes; regression observes -1 instead of zero","evidence":[Path::new(inputs["execution"]["tests"][0]["directory"].as_str().unwrap()).join("execution.json")]}]})
         }
         _ => panic!("unknown stage {stage}"),
     };

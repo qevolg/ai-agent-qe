@@ -77,6 +77,7 @@ impl ComposeEnvironment {
             execute: None,
         }
     }
+
     pub fn with_executor(mut self, execute: Executor) -> Self {
         self.execute = Some(execute);
         self
@@ -210,6 +211,7 @@ impl ComposeEnvironment {
         fs::remove_file(pending)?;
         Ok(())
     }
+
     pub fn arguments(&self, resolved: bool) -> Result<Vec<String>> {
         let mut argv = vec![
             "docker".into(),
@@ -275,9 +277,11 @@ impl ComposeEnvironment {
         ]);
         Ok(argv)
     }
+
     fn checked(&self, argv: &[String], label: &str) -> Result<ProcessResult> {
         self.checked_until(argv, label, None)
     }
+
     fn checked_until(
         &self,
         argv: &[String],
@@ -314,6 +318,7 @@ impl ComposeEnvironment {
         );
         Ok(result)
     }
+
     pub fn start(&self) -> Result<()> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(self.timeout);
         ensure!(
@@ -385,7 +390,7 @@ impl ComposeEnvironment {
             "--wait".into(),
             "--wait-timeout".into(),
             crate::config::unsigned_integer(&self.spec["readiness_timeout"])
-                .unwrap_or(180)
+                .unwrap_or(600)
                 .to_string(),
         ]);
         argv.extend(unique);
@@ -400,11 +405,13 @@ impl ComposeEnvironment {
         }
         Ok(())
     }
+
     fn spec_digest(&self) -> Result<String> {
         let mut spec = self.spec.clone();
         spec.sort_all_objects();
         Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&spec)?)))
     }
+
     fn inline_compose(&self) -> Result<Option<Value>> {
         let Some(value) = self.spec.get("compose").filter(|value| !value.is_null()) else {
             return Ok(None);
@@ -417,6 +424,7 @@ impl ComposeEnvironment {
         ensure!(document.is_object(), "Inline compose must be a JSON object");
         Ok(Some(document))
     }
+
     fn validate_spec(&self) -> Result<()> {
         let files = strings(&self.spec["compose_files"]);
         if self.inline_compose()?.is_some() {
@@ -432,6 +440,7 @@ impl ComposeEnvironment {
         }
         Ok(())
     }
+
     fn create_snapshot(&self, runner: &str, deadline: std::time::Instant) -> Result<()> {
         for name in strings(&self.spec["external_containers"]) {
             let result = self.checked_until(
@@ -509,6 +518,7 @@ impl ComposeEnvironment {
         )?;
         Ok(())
     }
+
     pub fn execute_test(&self, command: &[String], test_id: &str, timeout: u64) -> Result<Value> {
         self.ensure_no_pending_setup()?;
         let attempt = Uuid::new_v4().simple().to_string();
@@ -538,6 +548,7 @@ impl ComposeEnvironment {
         write_json(&directory.join("execution.json"), &evidence)?;
         Ok(evidence)
     }
+
     pub fn status(&self) -> Result<ProcessResult> {
         let mut argv = self.arguments(true)?;
         argv.extend([
@@ -548,12 +559,14 @@ impl ComposeEnvironment {
         ]);
         Ok(self.execute_complete(&argv, 30))
     }
+
     pub fn logs(&self) -> Result<()> {
         let mut argv = self.arguments(true)?;
         argv.extend(["logs".into(), "--no-color".into(), "--timestamps".into()]);
         self.checked(&argv, "logs")?;
         Ok(())
     }
+
     pub fn cleanup(&self) -> Result<()> {
         let path = self.env_dir.join("ownership.json");
         if !path.is_file() {

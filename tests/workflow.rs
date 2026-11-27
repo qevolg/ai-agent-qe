@@ -22,6 +22,7 @@ use std::{
 fn command(root: &Path, args: &[&str]) -> String {
     git(root, args).unwrap()
 }
+
 fn repository(temp: &Path) -> PathBuf {
     support::repository(temp, false)
 }
@@ -68,13 +69,19 @@ impl AuditAgent for Agent {
                 json!({"summary":"plan","plans":[{"candidate_id":"bug","test_id":"test","expectation":"two","oracle":"requirement","steps":["call"],"reproduction":["rerun"],"blocked_reason":if self.mode=="blocked" {json!("no requirement")} else {Value::Null}}]})
             }
             "test-developer" => {
-                json!({"summary":"test","patch":"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1 @@\n+#[test] fn regression() { assert!(false); }\n","tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[]}],"limitations":[]})
+                json!({"summary":"test","coverage":{"command":["coverage"],"report":"coverage.json","files":["app.rs"]},"patch":"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1 @@\n+#[test] fn regression() { assert!(false); }\n","tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[]}],"limitations":[]})
             }
             "test-validator" => {
-                json!({"summary":"checked","verdicts":[{"candidate_id":"bug","test_ids":["test"],"status":"confirmed","rationale":"assertion failed","evidence":[if self.mode=="fabricated" {"made-up.json".to_owned()} else {format!("{}/execution.json",inputs["execution"]["tests"][0]["directory"].as_str().unwrap())}]}]})
+                json!({"summary":"checked","coverage_assessment":{"scope_valid":true,"measurement_valid":true,"meaningful_assertions":true,"rationale":"Reviewed native evidence and complete production scope"},"verdicts":[{"candidate_id":"bug","test_ids":["test"],"status":"confirmed","assessment":{"executed":true,"assertion_failed":true,"infrastructure_failure":false},"rationale":"assertion failed","evidence":[if self.mode=="fabricated" {"made-up.json".to_owned()} else {format!("{}/execution.json",inputs["execution"]["tests"][0]["directory"].as_str().unwrap())}]}]})
             }
             _ => bail!("unexpected stage"),
         };
+        if stage == "test-validator" && self.mode == "missing" {
+            output["verdicts"][0]["assessment"]["executed"] = json!(false);
+        }
+        if stage == "test-validator" && self.mode == "coverage-rejected" {
+            output["coverage_assessment"]["measurement_valid"] = json!(false);
+        }
         if self.mode == "float-line" && stage == "code-explorer" {
             output["references"][0]["line"] = json!(1.0);
         }
@@ -90,6 +97,7 @@ impl TestRuntime for Runtime {
     fn start(&self) -> Result<()> {
         Ok(())
     }
+
     fn logs(&self) -> Result<()> {
         if self.mode == "interrupt-baseline" {
             let result = aaqe::runtime::process::run(
@@ -108,7 +116,17 @@ impl TestRuntime for Runtime {
         }
         Ok(())
     }
+
     fn execute_test(&self, command: &[String], id: &str, _: u64) -> Result<Value> {
+        if id.starts_with("coverage-") {
+            let directory = self.root.join(id);
+            fs::create_dir_all(&directory)?;
+            fs::write(directory.join("raw.txt"), "measurement")?;
+            fs::write(directory.join("coverage.json"), json!({"files":[{"path":"app.rs","covered_lines":1,"executable_lines":1}],"raw_reports":["raw.txt"]}).to_string())?;
+            return Ok(
+                json!({"test_id":id,"directory":directory,"result":{"returncode":0,"timed_out":false}}),
+            );
+        }
         let baseline = id.starts_with("baseline");
         // This observes the actual git patch reversal, rather than mocking that operation.
         assert_eq!(
@@ -193,6 +211,7 @@ fn interrupted_baseline_restores_generated_patch_and_collects_logs() {
     );
     assert!(aaqe::runtime::process::interrupted());
 }
+
 #[test]
 fn workflow_preserves_stages_baseline_patch_evidence_and_partial_reports() {
     for mode in [
@@ -206,6 +225,7 @@ fn workflow_preserves_stages_baseline_patch_evidence_and_partial_reports() {
         "fabricated",
         "mismatch",
         "bad-baseline",
+        "coverage-rejected",
     ] {
         let temp = tempfile::tempdir().unwrap();
         let root = repository(temp.path());
@@ -239,7 +259,7 @@ fn workflow_preserves_stages_baseline_patch_evidence_and_partial_reports() {
                 assert_eq!(state["stages"].as_array().unwrap().len(), 2);
                 assert!(state["environment"].is_null());
             }
-            "fail" | "invented" | "blocked" | "bad-baseline" => {
+            "fail" | "invented" | "blocked" | "bad-baseline" | "coverage-rejected" => {
                 assert_eq!(state["status"], "blocked");
                 assert!(state["error"].is_string());
             }
@@ -258,9 +278,11 @@ fn workflow_preserves_stages_baseline_patch_evidence_and_partial_reports() {
         }
     }
 }
+
 fn binary() -> Command {
     Command::new(env!("CARGO_BIN_EXE_aaqe"))
 }
+
 #[test]
 fn cli_prompt_options_version_and_invalid_inputs() {
     assert!(binary().arg("--version").output().unwrap().status.success());
@@ -324,6 +346,7 @@ impl Drop for Cleanup {
         }
     }
 }
+
 #[test]
 #[ignore = "requires a running Docker daemon and tmux"]
 fn real_docker_workflow_reproduction_and_owned_cleanup() {
@@ -342,7 +365,7 @@ fn real_docker_scenario(early_inline: bool) {
     command(&root, &["add", "."]);
     command(&root, &["commit", "-m", "runnable example"]);
     command(&root, &["push", "origin", "main"]);
-    // The fixture is a model boundary; actual Git, tmux, Docker and JUnit execution are used.
+    // The fixture is a model boundary; actual Git, tmux, Docker and LLVM coverage are used.
     let config_file = root.join("aaqe.yaml");
     let mut config: Value =
         serde_yaml::from_str(&fs::read_to_string(&config_file).unwrap()).unwrap();
@@ -575,8 +598,8 @@ fn real_docker_scenario(early_inline: bool) {
         String::from_utf8_lossy(&replay.stdout)
     );
     let records: Value = serde_json::from_slice(&replay.stdout).unwrap();
-    assert_eq!(records[0]["junit"]["complete"], true);
-    assert_eq!(records[0]["junit"]["cases"][0]["status"], "failed");
+    assert_eq!(records[0]["evidence"]["complete"], true);
+    assert_eq!(records[0]["result"]["returncode"], 1);
     if early_inline {
         assert!(!dir.join("executions/installer-leaked").exists());
     }
@@ -585,6 +608,13 @@ fn real_docker_scenario(early_inline: bool) {
         report["execution"]["tests"][0]["directory"]
     );
     let updated = read_json(&dir.join("report.json")).unwrap();
+    let reproduction = updated["reproductions"].as_array().unwrap().last().unwrap();
+    assert_eq!(reproduction["coverage"]["status"], "passed");
+    assert_eq!(reproduction["coverage"]["percent"], 100.0);
+    assert_ne!(
+        reproduction["coverage"]["record"]["directory"],
+        report["execution"]["coverage"]["record"]["directory"]
+    );
     assert_eq!(updated["execution"], report["execution"]);
     assert_eq!(updated["verdicts"], report["verdicts"]);
     // Rendering failure must not prevent actual Docker cleanup or state persistence.

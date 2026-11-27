@@ -10,6 +10,7 @@ repository = "https://github.com/qevolg/ai-agent-qe"
 default-run = "aaqe"
 include = [
   "/Cargo.toml", "/Cargo.lock", "/README*.md", "/LICENSE", "/aaqe.yaml.example",
+  "/install.sh", "/docs/configuration.md",
   "/src/**/*.rs", "/resources/**/*.md", "/resources/**/*.json", "/tests/**/*.rs",
 ]
 
@@ -25,11 +26,9 @@ path = "src/main.rs"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
-encoding_rs = "0.8"
 jsonschema = { version = "0.33", default-features = false }
 libc = "0.2"
 regex = "1"
-roxmltree = "0.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"

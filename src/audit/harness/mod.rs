@@ -569,6 +569,17 @@ impl<'a> AuditHarness<'a> {
             }
             self.gate()?.verify_worktree()?;
         }
+        let coverage_blocked = status == "completed"
+            && self.artifacts["test-developer"]["patch"]
+                .as_str()
+                .is_some_and(|patch| !patch.trim().is_empty())
+            && !crate::guards::coverage::approved(&self.execution, &self.artifacts);
+        let status = if coverage_blocked { "blocked" } else { status };
+        let reason = if coverage_blocked {
+            "Target module line coverage must reach 80% and pass independent validation"
+        } else {
+            reason
+        };
         self.state["status"] = json!(status);
         self.state["finish_reason"] = json!(reason);
         if status == "blocked" {
@@ -670,6 +681,28 @@ pub fn audit(
     harness.state["finished_at"] = json!(now());
     harness.state["audit_finalized"] = json!(true);
     harness.save()?;
+    if harness.artifacts["test-developer"]["patch"]
+        .as_str()
+        .is_some_and(|patch| !patch.trim().is_empty())
+        && harness.state["status"] != "interrupted"
+        && crate::runtime::policy::denial(&harness.directory).is_none()
+    {
+        if let Err(error) = crate::runtime::publication::publish(
+            &harness.directory,
+            &mut harness.state,
+            &harness.artifacts,
+            &harness.execution,
+            config,
+        ) {
+            progress(&format!(
+                "Test publication failed: {error:#}; retry with aaqe publish {id}"
+            ));
+        }
+        harness.save()?;
+        if let Some(url) = harness.state["publication"]["mr_url"].as_str() {
+            progress(&format!("GitLab MR: {url}"));
+        }
+    }
     generate_report(
         &harness.directory,
         &harness.state,

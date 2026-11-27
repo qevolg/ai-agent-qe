@@ -1,3 +1,3 @@
 pub mod contracts;
-pub mod junit;
+pub mod coverage;
 pub mod patch;

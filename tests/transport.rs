@@ -22,6 +22,7 @@ impl Sessions {
     fn new() -> Self {
         Self(TempDir::new().unwrap())
     }
+
     fn path(&self) -> &Path {
         self.0.path()
     }
@@ -52,12 +53,14 @@ impl Drop for Sessions {
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|s| s.to_string()).collect()
 }
+
 fn coordinator_id() -> String {
     format!(
         "20261125081514-{}",
         &uuid::Uuid::new_v4().simple().to_string()[..8]
     )
 }
+
 fn ready(path: &Path) {
     let limit = Instant::now() + Duration::from_secs(8);
     while !path.exists() && Instant::now() < limit {

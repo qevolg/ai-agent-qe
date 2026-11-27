@@ -8,6 +8,22 @@ use std::{
 
 use crate::state::{absolute_path, expand_user};
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Publication {
+    pub project: Option<String>,
+    pub glab_command: Vec<String>,
+}
+
+impl Default for Publication {
+    fn default() -> Self {
+        Self {
+            project: None,
+            glab_command: vec!["glab".into()],
+        }
+    }
+}
+
 // JSON Schema's integer type includes mathematically integral JSON numbers
 // such as 3.0; serde_json's as_u64 alone only accepts integer storage.
 pub fn unsigned_integer(value: &Value) -> Option<u64> {
@@ -28,6 +44,7 @@ fn deserialize_timeout<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Res
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub publication: Publication,
     pub state_dir: PathBuf,
     pub remote: String,
     pub branch: String,
@@ -54,11 +71,12 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            publication: Publication::default(),
             state_dir: absolute_path(&expand_user(Path::new("~/.aaqe/runs"))),
             remote: "origin".into(),
             branch: "main".into(),
             codex_command: vec!["codex".into()],
-            model: String::new(),
+            model: "gpt-6.1-sol".into(),
             environment: json!({}),
             references: vec![],
             test_paths: [
@@ -72,12 +90,12 @@ impl Default for Config {
             .map(str::to_owned)
             .collect(),
             baseline: vec![],
-            agent_timeout: 1800,
-            test_timeout: 1200,
-            docker_timeout: 1200,
+            agent_timeout: 7200,
+            test_timeout: 7200,
+            docker_timeout: 3600,
             max_stage_calls: 20,
             max_stage_attempts: 4,
-            run_timeout: 14400,
+            run_timeout: 43200,
         }
     }
 }
@@ -108,6 +126,9 @@ impl Config {
             bail!("Invalid configuration: {error}");
         }
         let mut config = Self::default();
+        if let Some(publication) = data.get("publication") {
+            config.publication = serde_json::from_value(publication.clone())?;
+        }
         let parent = path.parent().context("Invalid configuration path")?;
         if let Some(state) = data["state_dir"].as_str() {
             config.state_dir = absolute_path(&parent.join(expand_user(Path::new(state))));
@@ -179,7 +200,11 @@ mod tests {
         assert_eq!(default.branch, "main");
         assert_eq!(default.max_stage_calls, 20);
         assert_eq!(default.max_stage_attempts, 4);
-        assert_eq!(default.run_timeout, 14400);
+        assert_eq!(default.model, "gpt-6.1-sol");
+        assert_eq!(default.agent_timeout, 7200);
+        assert_eq!(default.test_timeout, 7200);
+        assert_eq!(default.docker_timeout, 3600);
+        assert_eq!(default.run_timeout, 43200);
         assert!(default.state_dir.is_absolute());
         fs::write(
             directory.join("aaqe.yaml"),

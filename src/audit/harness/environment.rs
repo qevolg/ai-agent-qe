@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime::compose::ComposeEnvironment;
+use crate::runtime::compose::{ComposeEnvironment, strings};
 use std::collections::HashSet;
 
 fn merge(target: &mut Value, source: &Value) -> Result<()> {
@@ -31,6 +31,7 @@ impl AuditHarness<'_> {
                     .any(|p| p["blocked_reason"].is_null() || p["blocked_reason"] == "")
             })
     }
+
     pub fn recovery(&self) -> Value {
         let blocked: Vec<_> = self.artifacts["test-designer"]["plans"]
             .as_array()
@@ -62,6 +63,7 @@ impl AuditHarness<'_> {
         }
         json!({"blocked_plan_ids":blocked,"permitted_next_actions":actions,"permitted_stages":available,"classification_action":"Return to test-designer to change semantic blockers; dispatch instructions cannot override them"})
     }
+
     fn operation_gate(&self) -> Result<u64> {
         ensure!(
             crate::runtime::policy::denial(&self.directory).is_none(),
@@ -90,6 +92,7 @@ impl AuditHarness<'_> {
         );
         Ok(remaining)
     }
+
     fn remaining_time(&self) -> Result<u64> {
         let elapsed = chrono::Utc::now()
             .signed_duration_since(chrono::DateTime::parse_from_rfc3339(
@@ -105,6 +108,7 @@ impl AuditHarness<'_> {
         );
         Ok(self.config.run_timeout - elapsed)
     }
+
     fn action(&mut self, operation: &str, result: Result<Value>) -> Result<Value> {
         let value = match result {
             Ok(value) => {
@@ -124,6 +128,7 @@ impl AuditHarness<'_> {
         self.save()?;
         Ok(value)
     }
+
     pub fn inspect_environment(&mut self, probe: &Value) -> Result<Value> {
         let result = (|| {
             let remaining = self.operation_gate()?;
@@ -152,9 +157,11 @@ impl AuditHarness<'_> {
         })();
         self.action("inspect_environment", result)
     }
+
     pub fn prepare_environment(&mut self, environment: Option<Value>) -> Result<Value> {
         self.prepare_environment_with_setup(environment, None)
     }
+
     pub fn prepare_environment_with_setup(
         &mut self,
         environment: Option<Value>,
@@ -239,6 +246,7 @@ impl AuditHarness<'_> {
         })();
         self.action("prepare_environment", result)
     }
+
     pub fn execute_tests(&mut self, test_ids: Option<Vec<String>>) -> Result<Value> {
         let result = (|| {
             self.operation_gate()?;
@@ -283,6 +291,7 @@ impl AuditHarness<'_> {
             ),
         }
     }
+
     pub(super) fn execute(&mut self, output: &Value, attempt: &Path) -> Result<()> {
         self.operation_gate()?;
         self.gate()?.verify_worktree()?;
@@ -318,6 +327,7 @@ impl AuditHarness<'_> {
         self.save_execution(attempt)?;
         outcome
     }
+
     fn execute_round(&mut self, output: &Value, attempt: &Path) -> Result<()> {
         let prepared = self.prepare_environment(None)?;
         ensure!(
@@ -381,6 +391,63 @@ impl AuditHarness<'_> {
                 "Applicable baseline failed; target verification is blocked: {}",
                 failures.join("; ")
             );
+            let coverage = (|| -> Result<Value> {
+                let specification = &output["coverage"];
+                ensure!(specification.is_object(), "No coverage command supplied");
+                let expected = self.artifacts["code-explorer"]["coverage_files"]
+                    .as_array()
+                    .unwrap_or(
+                        self.artifacts["code-explorer"]["scope"]
+                            .as_array()
+                            .context("Missing audited scope")?,
+                    );
+                ensure!(
+                    specification["files"].as_array().is_some_and(|files| {
+                        let actual: HashSet<_> = files.iter().filter_map(Value::as_str).collect();
+                        let expected: HashSet<_> =
+                            expected.iter().filter_map(Value::as_str).collect();
+                        actual == expected && !actual.is_empty()
+                    }),
+                    "Coverage files differ from the audited production scope"
+                );
+                let record = runtime.execute_test(
+                    &strings(&specification["command"]),
+                    &format!("coverage-{}", uuid::Uuid::new_v4().simple()),
+                    self.config.test_timeout.min(self.remaining_time()?),
+                )?;
+                self.execution["coverage"] = json!({"status":"blocked","record":record});
+                self.save_execution(attempt)?;
+                let code = record["result"]["returncode"]
+                    .as_i64()
+                    .context("Coverage process has no exit status")?;
+                ensure!(
+                    record["result"]["timed_out"] != true && (0..=1).contains(&code),
+                    "Coverage measurement failed or timed out"
+                );
+                let mut measurement = crate::guards::coverage::read_coverage(
+                    &self.root()?,
+                    Path::new(
+                        record["directory"]
+                            .as_str()
+                            .context("Missing coverage directory")?,
+                    ),
+                    specification,
+                )?;
+                self.gate()?.verify_worktree()?;
+                measurement["record"] = record;
+                Ok(measurement)
+            })();
+            match coverage {
+                Ok(measurement) => self.execution["coverage"] = measurement,
+                Err(error) => {
+                    if !self.execution["coverage"].is_object() {
+                        self.execution["coverage"] = json!({});
+                    }
+                    self.execution["coverage"]["status"] = json!("blocked");
+                    self.execution["coverage"]["error"] = json!(format!("{error:#}"));
+                }
+            }
+            self.save_execution(attempt)?;
             Ok(())
         })();
         if let Err(error) = ignoring_interrupts(|| runtime.logs()) {
@@ -388,6 +455,7 @@ impl AuditHarness<'_> {
         }
         result
     }
+
     fn baselines(
         &mut self,
         runtime: &dyn crate::audit::interfaces::TestRuntime,

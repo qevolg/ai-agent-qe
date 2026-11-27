@@ -9,6 +9,7 @@ use std::{fs, path::Path};
 fn text(value: &Value) -> &str {
     value.as_str().unwrap_or("")
 }
+
 fn array(value: &Value) -> Vec<Value> {
     value.as_array().cloned().unwrap_or_default()
 }
@@ -121,7 +122,7 @@ pub fn generate_report(
         .collect();
     let document = json!({
         "schema_version":"1.0","run_id":state["id"],"generated_at":now(),"prompt":state["prompt"],"status":state["status"],"error":state["error"],
-        "workspace":state["workspace"],"stages":state["stages"],"finish_reason":state["finish_reason"],"coordinator":{"directory":directory.join("stages/coordinator"),"tool_log":directory.join("stages/coordinator/tools.jsonl")},"scope":array(&artifacts["code-explorer"]["scope"]),"uncertainties":array(&artifacts["code-explorer"]["uncertainties"]),
+        "workspace":state["workspace"],"publication":state["publication"],"coverage":execution["coverage"],"coverage_assessment":artifacts["test-validator"]["coverage_assessment"],"stages":state["stages"],"finish_reason":state["finish_reason"],"coordinator":{"directory":directory.join("stages/coordinator"),"tool_log":directory.join("stages/coordinator/tools.jsonl")},"scope":array(&artifacts["code-explorer"]["scope"]),"uncertainties":array(&artifacts["code-explorer"]["uncertainties"]),
         "excluded_areas":array(&artifacts["bug-hunter"]["excluded_areas"]),"candidates":candidates,"verdicts":verdicts,"execution":execution,"environment":state["environment"],
         "candidate_results":candidate_results,"environment_started":state["environment_started"].as_bool().unwrap_or(false),"environment_ready":state["environment_ready"].as_bool().unwrap_or(false),
         "environment_actions":array(&state["environment_actions"]),"dispatch_rejections":array(&state["dispatch_rejections"]),"execution_attempts":array(&state["execution_attempts"]),
@@ -267,8 +268,18 @@ fn markdown(state: &Value, document: &Value, artifacts: &Value) -> Result<String
         }
         md.push('\n');
     }
-    md.push_str(&format!("## 环境与证据\n\n环境已启动：{}；就绪检查通过：{}。\n\n主调度记录：`stages/coordinator/tools.jsonl`；阶段产物及历史尝试保存在 `stages/`；当前有效产物在 `artifacts/`。\n\n基线、目标测试及 JUnit 原始证据通过执行记录中的目录关联。\n\n", yes_no(document["environment_started"] == true), yes_no(document["environment_ready"] == true)));
+    md.push_str(&format!("## 环境与证据\n\n环境已启动：{}；就绪检查通过：{}。\n\n主调度记录：`stages/coordinator/tools.jsonl`；阶段产物及历史尝试保存在 `stages/`；当前有效产物在 `artifacts/`。\n\n基线、目标测试及原始执行证据通过执行记录中的目录关联。\n\n", yes_no(document["environment_started"] == true), yes_no(document["environment_ready"] == true)));
     json_section(&mut md, "环境定义", &document["environment"])?;
+    json_section(
+        &mut md,
+        "目标模块行覆盖率（要求至少 80%）",
+        &document["coverage"],
+    )?;
+    json_section(&mut md, "覆盖率独立验证", &document["coverage_assessment"])?;
+    if let Some(url) = document["publication"]["mr_url"].as_str() {
+        md.push_str(&format!("## 测试交付\n\nGitLab MR：{url}\n\n"));
+    }
+    json_section(&mut md, "提交与发布状态", &document["publication"])?;
     md.push_str("## 验证结果\n\n");
     if candidates.is_empty() {
         md.push_str(&format!("{empty_result}\n\n"));
@@ -322,9 +333,12 @@ fn markdown(state: &Value, document: &Value, artifacts: &Value) -> Result<String
             ));
             for record in executions {
                 md.push_str(&format!(
-                    "  - 退出码：{}；JUnit 完整：{}；证据：`{}/execution.json`\n",
+                    "  - 退出码：{}；执行记录完整：{}；证据：`{}/execution.json`\n",
                     record["result"]["returncode"],
-                    yes_no(record["junit"]["complete"] == true),
+                    yes_no(
+                        record["evidence"]["complete"] == true
+                            || record["junit"]["complete"] == true
+                    ),
                     text(&record["directory"])
                 ));
             }
@@ -419,6 +433,6 @@ fn markdown(state: &Value, document: &Value, artifacts: &Value) -> Result<String
         }
     }
     let id = text(&state["id"]);
-    md.push_str(&format!("### 再次验证命令\n\n```bash\naaqe reproduce {id} --case TEST_ID\naaqe env status {id}\naaqe env shell {id}\naaqe cleanup {id}\n```\n\n`TEST_ID` 替换为实际测试 ID；省略 `--case` 重跑全部已保存测试。自定义运行目录时继续传入相同的 `--state-dir`。清理保留报告、测试补丁、分支及 Worktree。\n\n阶段原始产物、基线和每次执行的进程/JUnit 记录均保存在本报告所在的运行目录中。\n"));
+    md.push_str(&format!("### 再次验证命令\n\n```bash\naaqe reproduce {id} --case TEST_ID\naaqe env status {id}\naaqe env shell {id}\naaqe cleanup {id}\n```\n\n`TEST_ID` 替换为实际测试 ID；省略 `--case` 重跑全部已保存测试。自定义运行目录时继续传入相同的 `--state-dir`。清理保留报告、测试补丁、分支及 Worktree。\n\n阶段原始产物、基线和每次执行的进程与测试记录均保存在本报告所在的运行目录中。\n"));
     Ok(md)
 }

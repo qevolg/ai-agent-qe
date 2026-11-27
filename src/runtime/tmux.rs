@@ -25,9 +25,11 @@ use uuid::Uuid;
 fn strings(args: &[&str]) -> Vec<String> {
     args.iter().map(|a| (*a).to_owned()).collect()
 }
+
 fn quoted(argument: &str) -> String {
     shell_escape::unix::escape(argument.into()).into_owned()
 }
+
 fn shell_join(arguments: &[String]) -> String {
     arguments
         .iter()
@@ -47,7 +49,7 @@ fn tmux(arguments: &[&str], timeout: u64) -> ProcessResult {
             .push_str(&format!("tmux command timed out after {timeout}s"));
     } else if result.returncode == 127 {
         result.stderr = format!(
-            "Codex requires tmux; install tmux and run AAQE on Linux or WSL2: {}",
+            "Codex requires tmux; install tmux and run AAQE on Linux: {}",
             result.stderr
         );
     }

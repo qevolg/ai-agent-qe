@@ -102,6 +102,40 @@ fn configured(path: &Path, args: &[String]) {
     let spec: Value =
         serde_json::from_slice(&fs::read(path.with_extension("json")).unwrap()).unwrap();
     match spec["mode"].as_str() {
+        Some("gitlab") => {
+            let capture = Path::new(spec["capture"].as_str().unwrap());
+            let mut mr = spec["mr"].clone();
+            mr["source_project_id"] = json!(42);
+            mr["target_project_id"] = json!(42);
+            mr["sha"] = spec["sha"]
+                .as_str()
+                .map(|sha| json!(sha))
+                .unwrap_or_else(|| {
+                    let commit = Command::new("git")
+                        .args([
+                            "rev-parse",
+                            &format!("refs/heads/{}", mr["source_branch"].as_str().unwrap()),
+                        ])
+                        .output()
+                        .unwrap();
+                    assert!(commit.status.success());
+                    json!(String::from_utf8(commit.stdout).unwrap().trim())
+                });
+            if let Some(input) = args.windows(2).find(|pair| pair[0] == "--input") {
+                assert!(!capture.exists(), "MR was created more than once");
+                fs::copy(&input[1], capture).unwrap();
+                println!("{mr}");
+            } else if args
+                .last()
+                .is_some_and(|endpoint| !endpoint.contains("merge_requests"))
+            {
+                println!("{}", json!({"id":42}));
+            } else if capture.exists() || spec["existing"] == true {
+                println!("{}", json!([mr]));
+            } else {
+                println!("[]");
+            }
+        }
         Some("runner") => {
             assert_eq!(
                 args,

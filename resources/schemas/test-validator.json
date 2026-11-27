@@ -4,6 +4,17 @@
     "summary": {
       "type": "string"
     },
+    "coverage_assessment": {
+      "type": ["object", "null"],
+      "properties": {
+        "scope_valid": {"type": "boolean"},
+        "measurement_valid": {"type": "boolean"},
+        "meaningful_assertions": {"type": "boolean"},
+        "rationale": {"type": "string", "minLength": 1}
+      },
+      "required": ["scope_valid", "measurement_valid", "meaningful_assertions", "rationale"],
+      "additionalProperties": false
+    },
     "verdicts": {
       "type": "array",
       "items": {
@@ -39,6 +50,29 @@
               "type": "string",
               "minLength": 1
             }
+          },
+          "assessment": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "executed": {
+                "type": "boolean"
+              },
+              "assertion_failed": {
+                "type": "boolean"
+              },
+              "infrastructure_failure": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "executed",
+              "assertion_failed",
+              "infrastructure_failure"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [

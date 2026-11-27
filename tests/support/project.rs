@@ -34,6 +34,56 @@ fn main() {
             fs::write("/aaqe-results/installer-leaked", "leaked").unwrap();
         }
         "fail" => std::process::exit(9),
+        "coverage" => {
+            let directory = Path::new(&args[2]);
+            fs::create_dir_all(directory).unwrap();
+            let target = Command::new("rustc").args(["--print", "target-libdir"]).output().unwrap();
+            let target = String::from_utf8(target.stdout).unwrap();
+            let tools = Path::new(target.trim()).parent().unwrap().join("bin");
+            let mut binaries = Vec::new();
+            for (index, source) in ["tests/baseline.rs", "tests/regression.rs"].iter().enumerate() {
+                let binary = directory.join(format!("coverage-{index}"));
+                let mut compiler = Command::new("rustc");
+                compiler.args(["--edition=2024", "--test", "-C", "instrument-coverage", source, "-o"]).arg(&binary);
+                if Path::new("/aaqe-results/libaaqe_test_dependency.rlib").exists() {
+                    compiler.args(["--extern", "aaqe_test_dependency=/aaqe-results/libaaqe_test_dependency.rlib"]);
+                }
+                assert!(compiler.status().unwrap().success());
+                let status = Command::new(&binary).env("LLVM_PROFILE_FILE", directory.join(format!("case-{index}-%p.profraw"))).status().unwrap();
+                assert!(matches!(status.code(), Some(0 | 101)));
+                binaries.push(binary);
+            }
+            let profile = directory.join("merged.profdata");
+            let mut merge = Command::new(tools.join("llvm-profdata"));
+            merge.args(["merge", "-sparse", "-o"]).arg(&profile);
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().is_some_and(|extension| extension == "profraw") { merge.arg(path); }
+            }
+            assert!(merge.status().unwrap().success());
+            let mut export = Command::new(tools.join("llvm-cov"));
+            export.args(["export", "-format=lcov", "-instr-profile"]).arg(&profile).arg(&binaries[0]).arg("-object").arg(&binaries[1]);
+            let output = export.output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            fs::write(directory.join("native.lcov"), &output.stdout).unwrap();
+            let text = String::from_utf8(output.stdout).unwrap();
+            let mut target_file = false;
+            let mut lines = std::collections::BTreeMap::new();
+            for line in text.lines() {
+                if let Some(path) = line.strip_prefix("SF:") { target_file = path == "/workspace/app.rs"; }
+                if target_file {
+                    if let Some(data) = line.strip_prefix("DA:") {
+                        let fields = data.split(',').collect::<Vec<_>>();
+                        let number: usize = fields[0].parse().unwrap();
+                        let hits: u64 = fields[1].parse().unwrap();
+                        *lines.entry(number).or_insert(0_u64) += hits;
+                    }
+                }
+            }
+            assert!(!lines.is_empty(), "app.rs coverage is missing");
+            let covered = lines.values().filter(|hits| **hits > 0).count();
+            fs::write(directory.join("coverage.json"), format!("{{\"files\":[{{\"path\":\"app.rs\",\"covered_lines\":{covered},\"executable_lines\":{}}}],\"raw_reports\":[\"native.lcov\"]}}", lines.len())).unwrap();
+        }
         "test" => {
             let report = Path::new(&args[3]);
             fs::create_dir_all(report.parent().unwrap()).unwrap();
@@ -114,6 +164,8 @@ pub fn create(root: &Path) {
   services: [runner]
   runner_service: runner
   runner_workdir: /workspace
+  setup:
+    - [rustup, component, add, llvm-tools-preview]
   readiness:
     - [rustc, --edition=2024, /workspace/run_tests.rs, -o, /aaqe-results/project-runner]
 baseline:

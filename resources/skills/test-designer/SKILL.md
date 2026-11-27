@@ -20,6 +20,8 @@ Candidate list, analysis, behavioral references, existing fixtures and available
 
 # Outputs
 
+Plan enough meaningful tests to reach at least 80% production line coverage across Explorer's coverage_files, counting existing and new tests together. Coverage is an additional delivery requirement; it does not replace a behavioral oracle or require a particular language, framework, or report exporter.
+
 Return the test-designer schema with expectation, oracle, steps, reproduction and blocked_reason, plus execution_blocked_reason when needed. Use null for an unblocked design; an execution blocker does not prevent Developer.
 
 # Completion

@@ -29,16 +29,21 @@
             "minItems": 1
           },
           "report": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9_.-]+\\.xml$"
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[A-Za-z0-9_.-]+$"
           },
           "expected_names": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "type": "string",
               "minLength": 1
             },
-            "minItems": 1,
             "uniqueItems": true
           },
           "reproduction_commands": {
@@ -71,8 +76,6 @@
           "id",
           "candidate_id",
           "command",
-          "report",
-          "expected_names",
           "reproduction_commands"
         ],
         "additionalProperties": false
@@ -84,6 +87,41 @@
         "type": "string",
         "minLength": 1
       }
+    },
+    "coverage": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "report": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+\\.json$"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "command",
+        "report",
+        "files"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [

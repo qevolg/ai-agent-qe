@@ -38,6 +38,8 @@ enum Action {
     Doctor,
     /// Print a saved report
     Report { run_id: String },
+    /// Retry publication of the accepted test patch to GitLab
+    Publish { run_id: String },
     /// Rerun saved tests in the retained environment
     Reproduce {
         run_id: String,
@@ -97,6 +99,7 @@ pub fn main() -> i32 {
         }
     }
 }
+
 fn execute(cli: Cli) -> Result<i32> {
     if let Some(Action::TerminalLog { path }) = &cli.action {
         crate::runtime::tmux::terminal_log(path)?;
@@ -183,6 +186,7 @@ fn execute(cli: Cli) -> Result<i32> {
     }
     let run_id = match &action {
         Action::Report { run_id }
+        | Action::Publish { run_id }
         | Action::Reproduce { run_id, .. }
         | Action::Cleanup { run_id } => run_id,
         Action::Env { operation } => match operation {
@@ -201,6 +205,28 @@ fn execute(cli: Cli) -> Result<i32> {
     let mut state = store.load(run_id)?;
     let directory = store.path(state["id"].as_str().context("Missing run identity")?)?;
     match action {
+        Action::Publish { .. } => {
+            let _lock = RunLock::acquire(&directory)?;
+            let mut saved = crate::state::HarnessSnapshot::load(&directory)?;
+            let config: Config = serde_json::from_value(saved.state["config"].clone())?;
+            let result = crate::runtime::publication::publish(
+                &directory,
+                &mut saved.state,
+                &saved.artifacts,
+                &saved.execution,
+                &config,
+            );
+            saved.save(&directory)?;
+            refresh_report(&directory, &saved.state)?;
+            result?;
+            println!(
+                "GitLab MR: {}",
+                saved.state["publication"]["mr_url"]
+                    .as_str()
+                    .context("Missing GitLab MR URL")?
+            );
+            return Ok(0);
+        }
         Action::Report { .. } => {
             if directory.join("harness.json").exists() || !directory.join("report.md").is_file() {
                 refresh_report(&directory, &state)?;

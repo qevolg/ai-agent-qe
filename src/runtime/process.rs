@@ -47,6 +47,7 @@ pub fn install_signals() -> Result<()> {
 pub fn interrupted() -> bool {
     interrupt_flag().load(Ordering::SeqCst)
 }
+
 pub fn reset_interrupt() {
     interrupt_flag().store(false, Ordering::SeqCst);
 }

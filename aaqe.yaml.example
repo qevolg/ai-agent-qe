@@ -1,7 +1,5 @@
-# AAQE 可选项目配置：复制到被审计项目的 aaqe.yaml，或使用 --config PATH。
-# 默认只查运行命令时所在目录，不向上搜索；安装不会自动生成配置。
-# 时间与新运行编号统一使用 Asia/Shanghai，无需配置时区。
-# 完整字段说明：README.md / README.zh-CN.md。
+# Optional: save as aaqe.yaml in the audited project, or use --config PATH.
+# Defaults shown below. All timeout values are seconds.
 state_dir: ~/.aaqe/runs
 
 git:
@@ -10,10 +8,32 @@ git:
 
 codex:
   command: [codex]
-  # model: your-model-name  # 省略时使用 Codex 自身模型设置。
+  model: gpt-6.1-sol
 
-references: []  # 相对审计 Worktree 的接口、行为约定等参考文件。
-baseline: []    # 非空时为受信任的全局基线；每条命令使用 argv 数组。
+timeouts:
+  agent: 7200
+  test: 7200
+  docker: 3600
+
+loop:
+  max_stage_calls: 20
+  max_stage_attempts: 4
+  timeout: 43200
+
+# Leave empty to discover the product environment from repository evidence.
+environment: {}
+# environment:
+#   compose_files: [tests/compose.yaml]
+#   services: [database]
+#   runner_service: runner
+#   runner_workdir: /workspace
+#   readiness_timeout: 600
+#   setup: []
+#   readiness: []
+#   env_file: /private/product.env
+
+references: []
+baseline: []
 test_paths:
   - tests/**
   - test/**
@@ -21,28 +41,7 @@ test_paths:
   - "**/test/**"
   - .aaqe/tests/**
 
-# 先留空，由主调度/Explorer 从项目发现。按真实项目取消下列字段注释。
-# compose_files 与 inline compose 只能选择一种，镜像和版本必须来自项目依据。
-environment: {}
-# environment:
-#   compose_files: [tests/compose.yaml]  # 相对新 Worktree，文件需存在于基准提交。
-#   # compose: {services: ...}          # 或提供 inline Compose 对象。
-#   services: [runner]
-#   runner_service: runner             # 必须是持续运行的容器。
-#   runner_workdir: /workspace         # 只读源码；构建/结果写入 /aaqe-results 或卷。
-#   readiness_timeout: 180             # 秒。
-#   setup: []                          # 容器内以用户 0 运行的幂等安装 argv 列表。
-#   readiness: []                      # 容器内真实协议就绪检查 argv 列表。
-#   external_containers: []            # 仅检查，不修改或清理外部容器。
-#   # env_file: /private/product.env   # 相对路径以配置文件目录为准；勿提交凭据。
-
-# 所有超时单位均为秒。
-timeouts:
-  agent: 1800
-  test: 1200
-  docker: 1200
-
-loop:
-  max_stage_calls: 20
-  max_stage_attempts: 4
-  timeout: 14400  # 审计结束后不再限制主 TUI 交互。
+# Uses authenticated glab on the host; project defaults to the Git remote.
+# publication:
+#   project: https://gitlab.example/group/product
+#   glab_command: [glab]

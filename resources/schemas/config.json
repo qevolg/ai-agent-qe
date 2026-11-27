@@ -173,6 +173,27 @@
         }
       },
       "additionalProperties": false
+    },
+    "publication": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "glab_command": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false
