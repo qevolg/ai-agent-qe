@@ -5,7 +5,7 @@ use crate::{
     evidence::parse_junit,
     patchgate::PatchGate,
     reporting::refresh_report,
-    state::{Store, now, read_json, write_json},
+    state::{RunLock, Store, now, read_json, write_json},
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -220,6 +220,12 @@ pub fn run_audit_with(
 
 pub fn reproduce(store: &Store, state: &mut Value, case_id: Option<&str>) -> Result<Value> {
     let directory = store.path(state["id"].as_str().context("Missing run identity")?)?;
+    let _lock = RunLock::acquire(&directory)?;
+    *state = store.load(state["id"].as_str().unwrap())?;
+    ensure!(
+        state["status"] != "initializing" && state["status"] != "running",
+        "Cannot reproduce while the audit is running"
+    );
     ensure!(
         state["environment_cleaned_at"].is_null(),
         "This run's environment has already been cleaned"
@@ -256,36 +262,81 @@ pub fn reproduce(store: &Store, state: &mut Value, case_id: Option<&str>) -> Res
         state["environment"].clone(),
         config.docker_timeout,
     );
-    runtime.start()?;
-    let mut records = Vec::new();
-    for test in tests {
-        for (index, command) in test["reproduction_commands"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .enumerate()
-        {
-            let preparation = runtime.execute_test(
-                &strings(command),
-                &format!("{}-prepare-{}", test["id"].as_str().unwrap(), index + 1),
-                config.test_timeout,
-            )?;
-            ensure!(
-                preparation["result"]["returncode"] == 0,
-                "Reproduction preparation failed; original evidence retained"
-            );
-        }
-        records.push(collect_test(&runtime, &test, config.test_timeout)?);
-        gate.verify_worktree()?;
-    }
     if !state["reproductions"].is_array() {
         state["reproductions"] = json!([]);
     }
-    state["reproductions"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({"at":now(),"records":records}));
-    store.save(state)?;
-    refresh_report(&directory, state)?;
-    Ok(json!(records))
+    for previous in state["reproductions"].as_array_mut().unwrap() {
+        if previous["status"] == "running" {
+            previous["status"] = json!("interrupted");
+            previous["finished_at"] = json!(now());
+            previous["error"] = json!("Previous reproduction exited before recording completion");
+        }
+    }
+    let entry = state["reproductions"].as_array().unwrap().len();
+    let attempt = uuid::Uuid::new_v4().simple().to_string();
+    let evidence = directory.join("reproductions").join(&attempt);
+    state["reproductions"].as_array_mut().unwrap().push(json!({"id":attempt,"at":now(),"status":"running","phase":"environment_start","directory":evidence,"test_ids":tests.iter().map(|test|test["id"].clone()).collect::<Vec<_>>(),"preparations":[],"records":[]}));
+    let save_attempt = |state: &Value| -> Result<()> {
+        write_json(
+            &evidence.join("reproduction.json"),
+            &state["reproductions"][entry],
+        )?;
+        store.save(state)
+    };
+    save_attempt(state)?;
+    let outcome = (|| -> Result<()> {
+        runtime.start()?;
+        for test in tests {
+            state["reproductions"][entry]["test_id"] = test["id"].clone();
+            state["reproductions"][entry]["phase"] = json!("preparation");
+            save_attempt(state)?;
+            for (index, command) in test["reproduction_commands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+            {
+                let preparation = runtime.execute_test(
+                    &strings(command),
+                    &format!("{}-prepare-{}", test["id"].as_str().unwrap(), index + 1),
+                    config.test_timeout,
+                )?;
+                state["reproductions"][entry]["preparations"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(preparation.clone());
+                save_attempt(state)?;
+                ensure!(
+                    preparation["result"]["returncode"] == 0,
+                    "Reproduction preparation failed; original evidence retained"
+                );
+            }
+            state["reproductions"][entry]["phase"] = json!("test_execution");
+            save_attempt(state)?;
+            let record = collect_test(&runtime, &test, config.test_timeout)?;
+            state["reproductions"][entry]["records"]
+                .as_array_mut()
+                .unwrap()
+                .push(record);
+            save_attempt(state)?;
+            gate.verify_worktree()?;
+        }
+        Ok(())
+    })();
+    state["reproductions"][entry]["status"] = json!(if crate::process::interrupted() {
+        "interrupted"
+    } else if outcome.is_ok() {
+        "completed"
+    } else {
+        "failed"
+    });
+    state["reproductions"][entry]["finished_at"] = json!(now());
+    if let Err(error) = &outcome {
+        state["reproductions"][entry]["error"] = json!(format!("{error:#}"));
+    }
+    save_attempt(state)?;
+    let report = refresh_report(&directory, state);
+    outcome?;
+    report?;
+    Ok(state["reproductions"][entry]["records"].clone())
 }

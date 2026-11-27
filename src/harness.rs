@@ -6,7 +6,7 @@ use crate::{
     patchgate::{PatchGate, safe_path},
     process::{ignoring_interrupts, interrupted, run},
     reporting::generate_report,
-    state::{Store, now, read_json, write_json},
+    state::{HarnessSnapshot, RunLock, Store, now, read_json, write_json},
     workflow::{AuditAgent, RuntimeFactory, STAGES, collect_test, grounded_verdicts},
 };
 use anyhow::{Context, Result, ensure};
@@ -37,14 +37,14 @@ impl<'a> AuditHarness<'a> {
         factory: &'a RuntimeFactory<'a>,
         progress: &'a dyn Fn(&str),
     ) -> Result<Self> {
-        let saved = read_json(&directory.join("harness.json"))?;
+        let saved = HarnessSnapshot::load(directory)?;
         Ok(Self {
             directory: directory.to_owned(),
-            config: serde_json::from_value(saved["state"]["config"].clone())?,
-            state: saved["state"].clone(),
-            artifacts: saved["artifacts"].clone(),
-            execution: saved["execution"].clone(),
-            verdicts: saved["verdicts"].clone(),
+            config: serde_json::from_value(saved.state["config"].clone())?,
+            state: saved.state,
+            artifacts: saved.artifacts,
+            execution: saved.execution,
+            verdicts: saved.verdicts,
             agent,
             factory,
             progress,
@@ -52,19 +52,23 @@ impl<'a> AuditHarness<'a> {
     }
 
     pub fn reload(&mut self) -> Result<()> {
-        let saved = read_json(&self.directory.join("harness.json"))?;
-        self.state = saved["state"].clone();
-        self.artifacts = saved["artifacts"].clone();
-        self.execution = saved["execution"].clone();
-        self.verdicts = saved["verdicts"].clone();
+        let saved = HarnessSnapshot::load(&self.directory)?;
+        self.state = saved.state;
+        self.artifacts = saved.artifacts;
+        self.execution = saved.execution;
+        self.verdicts = saved.verdicts;
         Ok(())
     }
 
     fn save(&self) -> Result<()> {
-        write_json(&self.directory.join("harness.json"), &self.status())?;
-        write_json(&self.directory.join("run.json"), &self.state)?;
-        write_json(&self.directory.join("execution.json"), &self.execution)?;
-        Ok(())
+        HarnessSnapshot {
+            schema_version: 1,
+            state: self.state.clone(),
+            artifacts: self.artifacts.clone(),
+            execution: self.execution.clone(),
+            verdicts: self.verdicts.clone(),
+        }
+        .save(&self.directory)
     }
 
     pub fn status(&self) -> Value {
@@ -586,10 +590,13 @@ pub fn audit(
             "Run {id}: fetch {}/{} and create worktree",
             config.remote, config.branch
         ));
-        harness.state["workspace"] = create_workspace(caller, &harness.directory, config, &id)?;
-        harness.state["status"] = json!("running");
-        harness.state["loop_started_at"] = json!(now());
-        harness.save()?;
+        {
+            let _lock = RunLock::acquire(&harness.directory)?;
+            harness.state["workspace"] = create_workspace(caller, &harness.directory, config, &id)?;
+            harness.state["status"] = json!("running");
+            harness.state["loop_started_at"] = json!(now());
+            harness.save()?;
+        }
         let result = agent.coordinate(&mut harness);
         harness.reload()?;
         result?;
@@ -599,6 +606,8 @@ pub fn audit(
         );
         Ok(())
     })();
+    let _lock = RunLock::wait(&harness.directory)?;
+    harness.reload()?;
     if let Err(error) = outcome {
         harness.state["status"] = json!(if interrupted() {
             "interrupted"

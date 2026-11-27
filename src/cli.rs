@@ -3,7 +3,7 @@ use crate::{
     environment::ComposeEnvironment,
     process::{install_signals, run},
     reporting::refresh_report,
-    state::{Store, absolute_path, expand_user, now},
+    state::{RunLock, Store, absolute_path, expand_user, now},
     tmux::{cleanup_tmux, worker},
     workflow::{reproduce, run_audit},
 };
@@ -177,6 +177,11 @@ fn execute(cli: Cli) -> Result<i32> {
         _ => unreachable!(),
     };
     let store = Store::new(&config.state_dir);
+    let _lock = if matches!(action, Action::Cleanup { .. } | Action::Report { .. }) {
+        Some(RunLock::acquire(&store.path(run_id)?)?)
+    } else {
+        None
+    };
     let mut state = store.load(run_id)?;
     let directory = store.path(state["id"].as_str().context("Missing run identity")?)?;
     match action {

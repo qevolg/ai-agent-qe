@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use chrono::Utc;
 use regex::Regex;
 use serde_json::{Value, json};
@@ -7,6 +7,49 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 use uuid::Uuid;
+
+mod snapshot;
+pub use snapshot::HarnessSnapshot;
+
+/// Persistent inode: unlinking an advisory lock can allow two independent owners.
+pub struct RunLock(fs::File);
+
+impl RunLock {
+    pub fn acquire(directory: &Path) -> Result<Self> {
+        Self::open(directory, libc::LOCK_EX | libc::LOCK_NB)
+    }
+
+    /// Audit finalization waits for an in-flight MCP response to finish saving.
+    pub(crate) fn wait(directory: &Path) -> Result<Self> {
+        Self::open(directory, libc::LOCK_EX)
+    }
+
+    fn open(directory: &Path, operation: i32) -> Result<Self> {
+        use std::os::fd::AsRawFd;
+        fs::create_dir_all(directory)?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(directory.join("operation.lock"))?;
+        ensure!(
+            unsafe { libc::flock(file.as_raw_fd(), operation) } == 0,
+            "Run is busy; another operation owns {}",
+            directory.display()
+        );
+        Ok(Self(file))
+    }
+}
+
+impl Drop for RunLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
 
 use crate::config::Config;
 
@@ -125,11 +168,27 @@ impl Store {
     }
 
     pub fn load(&self, run_id: &str) -> Result<Value> {
-        read_json(&self.path(run_id)?.join("run.json"))
+        let directory = self.path(run_id)?;
+        if directory.join("harness.json").exists() {
+            return Ok(HarnessSnapshot::load(&directory)?.state);
+        }
+        let state = read_json(&directory.join("run.json"))?;
+        ensure!(
+            state["id"].as_str() == Some(run_id),
+            "Saved run identity differs from run directory"
+        );
+        Ok(state)
     }
 
     pub fn save(&self, state: &Value) -> Result<()> {
         let id = state["id"].as_str().context("Invalid run ID")?;
-        write_json(&self.path(id)?.join("run.json"), state)
+        let directory = self.path(id)?;
+        if directory.join("harness.json").exists() {
+            let mut snapshot = HarnessSnapshot::load(&directory)?;
+            snapshot.state = state.clone();
+            snapshot.save(&directory)
+        } else {
+            write_json(&directory.join("run.json"), state)
+        }
     }
 }

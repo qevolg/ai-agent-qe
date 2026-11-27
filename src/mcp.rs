@@ -208,8 +208,11 @@ pub fn serve(directory: &Path) -> Result<()> {
             "ping" => json!({"result":{}}),
             "tools/list" => json!({"result":{"tools":tools()}}),
             "tools/call" => {
-                harness.reload()?;
-                let result = call(&mut harness, &request["params"]);
+                let result = (|| {
+                    let _lock = crate::state::RunLock::acquire(directory)?;
+                    harness.reload()?;
+                    call(&mut harness, &request["params"])
+                })();
                 let (value, error) = match result {
                     Ok(value) => {
                         let failed = value["status"] == "failed";
