@@ -206,11 +206,11 @@ pub fn reproduce(store: &Store, state: &mut Value, case_id: Option<&str>) -> Res
             .context("Missing saved worktree")?,
     );
     let root = root_path.as_path();
-    let gate = PatchGate::new(
-        root,
-        &config.test_paths,
-        state["workspace"]["commit"].as_str(),
-    )?;
+    let gate = PatchGate::new(root, state["workspace"]["commit"].as_str())?.with_patch(
+        artifact["patch"]
+            .as_str()
+            .context("Missing accepted patch")?,
+    );
     gate.verify_worktree()?;
     let runtime = ComposeEnvironment::new(
         root,

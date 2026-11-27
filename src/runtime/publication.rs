@@ -138,7 +138,7 @@ fn publish_inner(
             .context("Missing audit worktree")?,
     );
     let base = workspace["commit"].as_str().context("Missing audit base")?;
-    let gate = PatchGate::new(root, &config.test_paths, Some(base))?;
+    let gate = PatchGate::new(root, Some(base))?.with_patch(patch);
     let mut paths = gate.verify_worktree()?;
     let remote = git(root, &["remote", "get-url", &config.remote])?;
     let (host, project_path) = project(config.publication.project.as_deref().unwrap_or(&remote))?;

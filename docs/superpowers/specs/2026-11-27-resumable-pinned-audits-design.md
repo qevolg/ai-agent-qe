@@ -1,0 +1,11 @@
+# Resumable audits and stable executors
+
+The approved change removes test-directory and language-specific patch restrictions from AAQE. Only test code in the audited project may change; Developer and independent Validator enforce this semantic rule. Structural patch safety, recorded base and exact accepted-patch integrity remain enforced mechanically.
+
+`aaqe resume --run-dir DIR [--from-stage STAGE]` continues the same audit without fetching another source revision. Public stages are code-explorer, bug-hunter, test-designer, test-developer and test-validator. The default is the next actionable stage. Resume archives current checkpoints, retains all attempts and raw evidence, invalidates conclusions from the chosen stage onward, and starts fresh execution budgets. An explicit harness resume tool supports continuation in the original tmux Codex conversation after blocked. External resume delivers an instruction to that conversation if alive; otherwise it launches a replacement coordinator. Run locks serialize mutations and prevent duplicate controllers. Completion must finalize reports/publication even after the original CLI has returned.
+
+Each Run owns an immutable executable snapshot, initially runtime/aaqe, recorded with version, SHA-256 and protocol compatibility. Internal workers launch the snapshot. A persistent stdio MCP relay dispatches requests to the active pinned executor, allowing explicit compatible recovery takeover while retaining the TUI and old executable. Normal installation only affects new Runs. On Linux snapshot the actual executing inode via /proc/self/exe, even after unlink. Install through a verified destination-side temporary file and atomic rename. No new user YAML settings.
+
+Legacy MCP servers predate the relay and cannot hot-load new code. Recovery must provide an explicit bridge to the new executor in the original conversation, rather than claiming disk replacement repairs a live process.
+
+The basic YAML example has English comments for every retained setting and omits internal/default configuration. Designer considers relevant normal, boundary, invalid, lifecycle, concurrency, dependency and representation cases, including module behavior and coverage; every experiment has a justified oracle and applicability. Existing artifact contracts remain compatible.

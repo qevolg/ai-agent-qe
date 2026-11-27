@@ -132,12 +132,8 @@ impl AuditAgent for Agent {
                 assert_eq!(reversed.returncode, 0);
             }
             if self.mode == "loss-replacement" {
-                aaqe::guards::patch::PatchGate::new(
-                    &root,
-                    &harness.config.test_paths,
-                    status["workspace"]["commit"].as_str(),
-                )?
-                .apply(replacement)?;
+                aaqe::guards::patch::PatchGate::new(&root, status["workspace"]["commit"].as_str())?
+                    .apply(replacement)?;
                 let mut artifact = status["artifacts"]["test-developer"].clone();
                 artifact["patch"] = json!(replacement);
                 aaqe::state::write_json(
@@ -215,7 +211,7 @@ impl AuditAgent for Agent {
                 json!({"summary":"plan","plans":[{"candidate_id":"bug","test_id":"test","expectation":"two","oracle":"documented behavior","steps":["call"],"reproduction":["rerun"],"blocked_reason":null}]})
             }
             "test-developer" => {
-                json!({"summary":"patch","coverage":{"command":["coverage"],"report":"coverage.json","files":["app.rs"]},"patch":if self.mode=="rollback" && retry {"--- a/app.rs\n+++ b/app.rs\n@@ -1 +1 @@\n-pub fn value() -> i32 { 1 }\n+pub fn value() -> i32 { 2 }\n"} else if retry {"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1,2 @@\n+// repaired regression\n+#[test] fn regression() { assert!(false); }\n"} else {"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1 @@\n+#[test] fn regression() { assert!(false); }\n"},"tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[]}],"limitations":[]})
+                json!({"summary":"patch","coverage":{"command":["coverage"],"report":"coverage.json","files":["app.rs"]},"patch":if self.mode=="rollback" && retry {"--- a/../app.rs\n+++ b/../app.rs\n@@ -1 +1 @@\n-pub fn value() -> i32 { 1 }\n+pub fn value() -> i32 { 2 }\n"} else if retry {"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1,2 @@\n+// repaired regression\n+#[test] fn regression() { assert!(false); }\n"} else {"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1 @@\n+#[test] fn regression() { assert!(false); }\n"},"tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[]}],"limitations":[]})
             }
             "test-validator" => {
                 let evidence = if self.mode == "stale" {
@@ -360,7 +356,7 @@ fn upstream_revisit_invalidates_active_downstream_evidence_but_keeps_history() {
 }
 
 #[test]
-fn rejected_replacement_restores_previous_patch_and_cannot_modify_production() {
+fn unsafe_replacement_restores_previous_accepted_patch() {
     let (_temp, state, directory) = audit("rollback");
     assert_eq!(state["status"], "blocked", "{state}");
     assert_eq!(

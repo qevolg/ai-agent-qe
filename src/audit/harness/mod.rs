@@ -104,10 +104,9 @@ impl<'a> AuditHarness<'a> {
     }
 
     fn gate(&self) -> Result<PatchGate> {
-        PatchGate::new(
-            &self.root()?,
-            &self.config.test_paths,
-            self.state["workspace"]["commit"].as_str(),
+        Ok(
+            PatchGate::new(&self.root()?, self.state["workspace"]["commit"].as_str())?
+                .with_patch(self.state["applied_patch"].as_str().unwrap_or("")),
         )
     }
 

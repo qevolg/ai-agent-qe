@@ -9,7 +9,7 @@ Candidates, behavioral oracles, test plans, generated patch, baseline records, a
 
 # Steps
 
-1. Read the test diff and inspect relevant code and cited behavior independently.
+1. Read every hunk of the cumulative test diff and inspect relevant code and cited behavior independently. Only test code and necessary test fixtures in the audited target project may change, including inline tests in mixed source files. File location grants no production-change permission. Reject production fixes/refactors, altered public behavior, weakened oracles and production-only scaffolding; require Developer repair before approval.
 2. Verify actual execution identifies the planned test, uses the audited code, reaches the relevant behavior and checks a meaningful assertion.
 3. Match every verdict test ID to the current execution round and its healthy applicable baseline: for_test_id identifies a scoped baseline; an unscoped baseline is global. An unrelated passing baseline and explicit empty baseline cannot support confirmation. Selected reruns invalidate earlier verdicts; historical attempts explain changes but do not replace current target evidence.
 4. Read native stdout/stderr and optional reports. No specific report format or test framework is required. Treat skipped/unexecuted tests, fixture errors, compilation failures, process timeouts and incomplete baseline as blocked evidence. Return assessment.executed, assessment.assertion_failed and assessment.infrastructure_failure for every verdict. A nonzero exit code alone never proves a product assertion failed.

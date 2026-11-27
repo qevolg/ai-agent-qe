@@ -120,13 +120,6 @@
         "minLength": 1
       }
     },
-    "test_paths": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      }
-    },
     "baseline": {
       "type": "array",
       "items": {

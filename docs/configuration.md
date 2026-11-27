@@ -16,7 +16,6 @@ Configuration is read before creating the audit worktree. Local uncommitted conf
 | `codex.model` | `gpt-6.1-sol` | Coordinator and independent workers; explicit empty string inherits Codex settings |
 | `references` | `[]` | Project behavior/interface documentation |
 | `baseline` | `[]` | Trusted global baseline argv arrays; nonempty values override discovered/per-test baselines |
-| `test_paths` | `tests/**`, `test/**`, `**/tests/**`, `**/test/**`, `.aaqe/tests/**` | Allowed test patch paths |
 | `timeouts.agent` | `7200` | Seconds per worker call |
 | `timeouts.test` | `7200` | Seconds per test or coverage command |
 | `timeouts.docker` | `3600` | Seconds per environment operation, shared across its steps |
@@ -109,3 +108,5 @@ cargo package --locked --allow-dirty --target-dir target/package-check
 Production modules live under `src/`; roles and schemas under `resources/`; integration tests and native subprocess fixtures under `tests/`. Function spacing is maintained manually, with stable rustfmt for standard formatting.
 
 Release tags `vVERSION` build Linux x86_64 musl archives and mandatory SHA-256 files. Publish a Release before recommending the binary installer to users. Source installation works independently.
+
+Test patches may contain tests in any repository path, including inline source tests. Developer and independent Validator enforce the test-only rule. AAQE checks safe paths, the recorded Git base and exact accepted-patch integrity before and after execution and publication.

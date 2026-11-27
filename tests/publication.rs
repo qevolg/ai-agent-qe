@@ -30,7 +30,7 @@ fn publication_creates_a_ready_mr_and_recovers_a_lost_journal() {
     )
     .unwrap();
     fs::write(temp.path().join("ignored"), "tests/*.json\n").unwrap();
-    aaqe::guards::patch::PatchGate::new(root, &config.test_paths, workspace["commit"].as_str())
+    aaqe::guards::patch::PatchGate::new(root, workspace["commit"].as_str())
         .unwrap()
         .apply(patch)
         .unwrap();
@@ -84,7 +84,7 @@ fn publication_pushes_exact_patch_and_reuses_the_remote_mr() {
     let workspace = create_workspace(&repository, &run, &config, "publication-test").unwrap();
     let root = Path::new(workspace["path"].as_str().unwrap());
     let patch = "--- /dev/null\n+++ b/tests/regression.rs\n@@ -0,0 +1 @@\n+#[test] fn regression() { assert!(false); }\n";
-    aaqe::guards::patch::PatchGate::new(root, &config.test_paths, workspace["commit"].as_str())
+    aaqe::guards::patch::PatchGate::new(root, workspace["commit"].as_str())
         .unwrap()
         .apply(patch)
         .unwrap();

@@ -1,47 +1,32 @@
-# Optional: save as aaqe.yaml in the audited project, or use --config PATH.
-# Defaults shown below. All timeout values are seconds.
-state_dir: ~/.aaqe/runs
+# Optional project overrides. Save as aaqe.yaml or pass --config PATH.
+# Omit this file entirely when AAQE can discover everything from the project.
 
+# Source revision to audit; omit this section for origin/main.
 git:
+  # Existing Git remote to fetch.
   remote: origin
+  # Branch on that remote to use for a new Run.
   branch: main
 
-codex:
-  command: [codex]
-  model: gpt-6.1-sol
+# Extra behavioral specifications or documentation URLs for the audit.
+references: []
 
-timeouts:
-  agent: 7200
-  test: 7200
-  docker: 3600
+# Trusted baseline commands (argv arrays), executed without generated tests.
+# Leave empty to discover existing tests from repository evidence.
+baseline: []
 
-loop:
-  max_stage_calls: 20
-  max_stage_attempts: 4
-  timeout: 43200
-
-# Leave empty to discover the product environment from repository evidence.
-environment: {}
+# Optional existing project environment; omit for automatic discovery.
 # environment:
+#   # Compose files relative to the audited project root.
 #   compose_files: [tests/compose.yaml]
-#   services: [database]
+#   # Compose service that executes build and test commands.
 #   runner_service: runner
+#   # Project working directory inside that runner.
 #   runner_workdir: /workspace
-#   readiness_timeout: 600
-#   setup: []
-#   readiness: []
+#   # Private environment file; relative paths resolve beside this YAML file.
 #   env_file: /private/product.env
 
-references: []
-baseline: []
-test_paths:
-  - tests/**
-  - test/**
-  - "**/tests/**"
-  - "**/test/**"
-  - .aaqe/tests/**
-
-# Uses authenticated glab on the host; project defaults to the Git remote.
+# Optional delivery override; the default project comes from the Git remote.
 # publication:
+#   # GitLab project URL for the accepted test patch.
 #   project: https://gitlab.example/group/product
-#   glab_command: [glab]

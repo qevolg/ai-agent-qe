@@ -52,7 +52,6 @@ pub struct Config {
     pub model: String,
     pub environment: Value,
     pub references: Vec<String>,
-    pub test_paths: Vec<String>,
     pub baseline: Vec<Vec<String>>,
     #[serde(deserialize_with = "deserialize_timeout")]
     pub agent_timeout: u64,
@@ -79,16 +78,6 @@ impl Default for Config {
             model: "gpt-6.1-sol".into(),
             environment: json!({}),
             references: vec![],
-            test_paths: [
-                "tests/**",
-                "test/**",
-                "**/tests/**",
-                "**/test/**",
-                ".aaqe/tests/**",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
             baseline: vec![],
             agent_timeout: 7200,
             test_timeout: 7200,
@@ -156,9 +145,6 @@ impl Config {
         }
         if let Some(references) = data.get("references") {
             config.references = serde_json::from_value(references.clone())?;
-        }
-        if let Some(paths) = data.get("test_paths") {
-            config.test_paths = serde_json::from_value(paths.clone())?;
         }
         if let Some(baseline) = data.get("baseline") {
             config.baseline = serde_json::from_value(baseline.clone())?;

@@ -4,7 +4,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
-use regex::bytes::Regex;
 
 use crate::runtime::process::{ProcessResult, run, run_env};
 
@@ -41,46 +40,6 @@ pub fn safe_path(root: &Path, relative: &str) -> Result<PathBuf> {
     Ok(destination)
 }
 
-fn rust_production(source: &[u8]) -> Result<Vec<u8>> {
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&tree_sitter_rust::LANGUAGE.into())?;
-    let tree = parser
-        .parse(source, None)
-        .context("Cannot parse Rust source")?;
-    ensure!(
-        !tree.root_node().has_error(),
-        "Cannot verify production boundary in invalid Rust syntax"
-    );
-    let mut cursor = tree.root_node().walk();
-    let children: Vec<_> = tree.root_node().children(&mut cursor).collect();
-    let attribute = Regex::new(r"^#\[\s*cfg\s*\(\s*test\s*\)\s*\]$")?;
-    let mut output = Vec::new();
-    let mut index = 0;
-    while index < children.len() {
-        let node = children[index];
-        let text = &source[node.byte_range()];
-        if node.kind() == "attribute_item" && attribute.is_match(text) {
-            let mut end = index + 1;
-            while end < children.len() && children[end].kind() == "attribute_item" {
-                end += 1;
-            }
-            if end < children.len() && children[end].kind() == "mod_item" {
-                let mut module_cursor = children[end].walk();
-                if children[end]
-                    .children(&mut module_cursor)
-                    .any(|child| child.kind() == "declaration_list")
-                {
-                    index = end + 1;
-                    continue;
-                }
-            }
-        }
-        output.extend_from_slice(text);
-        index += 1;
-    }
-    Ok(output)
-}
-
 struct TemporaryIndex(PathBuf);
 impl TemporaryIndex {
     fn new() -> Result<Self> {
@@ -103,97 +62,12 @@ impl Drop for TemporaryIndex {
 
 pub struct PatchGate {
     root: PathBuf,
-    test_paths: Vec<Vec<PatternPart>>,
+    expected_patch: Option<String>,
     base_commit: String,
 }
 
-#[derive(Clone)]
-enum PatternPart {
-    AnySequence,
-    AnyCharacter,
-    Literal(char),
-    CharacterSet {
-        negated: bool,
-        ranges: Vec<(char, char)>,
-    },
-}
-
-// Match Python fnmatchcase: slashes are ordinary characters, `**` is `*`,
-// and braces are literal. Filesystem glob semantics would widen permissions.
-fn parse_pattern(pattern: &str) -> Vec<PatternPart> {
-    let characters: Vec<_> = pattern.chars().collect();
-    let mut parts = Vec::new();
-    let mut index = 0;
-    while index < characters.len() {
-        match characters[index] {
-            '*' => parts.push(PatternPart::AnySequence),
-            '?' => parts.push(PatternPart::AnyCharacter),
-            '[' => {
-                let mut end = index + 1;
-                let negated = characters.get(end) == Some(&'!');
-                if negated {
-                    end += 1;
-                }
-                if characters.get(end) == Some(&']') {
-                    end += 1;
-                }
-                while end < characters.len() && characters[end] != ']' {
-                    end += 1;
-                }
-                if end == characters.len() {
-                    parts.push(PatternPart::Literal('['));
-                } else {
-                    let mut cursor = index + 1 + usize::from(negated);
-                    let mut ranges = Vec::new();
-                    while cursor < end {
-                        if cursor + 2 < end && characters[cursor + 1] == '-' {
-                            ranges.push((characters[cursor], characters[cursor + 2]));
-                            cursor += 3;
-                        } else {
-                            ranges.push((characters[cursor], characters[cursor]));
-                            cursor += 1;
-                        }
-                    }
-                    parts.push(PatternPart::CharacterSet { negated, ranges });
-                    index = end;
-                }
-            }
-            character => parts.push(PatternPart::Literal(character)),
-        }
-        index += 1;
-    }
-    parts
-}
-
-fn matches_pattern(pattern: &[PatternPart], path: &str) -> bool {
-    let characters: Vec<_> = path.chars().collect();
-    let mut previous = vec![false; characters.len() + 1];
-    previous[0] = true;
-    for part in pattern {
-        let mut current = vec![false; previous.len()];
-        for index in 0..=characters.len() {
-            current[index] = match part {
-                PatternPart::AnySequence => previous[index] || (index > 0 && current[index - 1]),
-                _ if index == 0 => false,
-                PatternPart::AnyCharacter => previous[index - 1],
-                PatternPart::Literal(character) => {
-                    previous[index - 1] && *character == characters[index - 1]
-                }
-                PatternPart::CharacterSet { negated, ranges } => {
-                    previous[index - 1]
-                        && (ranges.iter().any(|(start, end)| {
-                            *start <= characters[index - 1] && characters[index - 1] <= *end
-                        }) != *negated)
-                }
-            };
-        }
-        previous = current;
-    }
-    previous[characters.len()]
-}
-
 impl PatchGate {
-    pub fn new(workspace: &Path, test_paths: &[String], base_commit: Option<&str>) -> Result<Self> {
+    pub fn new(workspace: &Path, base_commit: Option<&str>) -> Result<Self> {
         let root = workspace
             .canonicalize()
             .context("Cannot resolve worktree")?;
@@ -204,10 +78,7 @@ impl PatchGate {
         );
         Ok(Self {
             root,
-            test_paths: test_paths
-                .iter()
-                .map(|pattern| parse_pattern(pattern))
-                .collect(),
+            expected_patch: None,
             base_commit: base_commit.unwrap_or(current.stdout.trim()).to_string(),
         })
     }
@@ -233,10 +104,10 @@ impl PatchGate {
         Ok(())
     }
 
-    fn test_only(&self, path: &str) -> bool {
-        self.test_paths
-            .iter()
-            .any(|pattern| matches_pattern(pattern, path))
+    /// The accepted cumulative patch; an empty string requires the recorded base.
+    pub fn with_patch(mut self, patch: &str) -> Self {
+        self.expected_patch = Some(patch.to_owned());
+        self
     }
 
     pub fn apply(&self, patch: &str) -> Result<Vec<String>> {
@@ -305,24 +176,6 @@ impl PatchGate {
                 "Patch does not apply to the recorded base: {}",
                 staged.stderr.trim()
             );
-            for path in &paths {
-                if self.test_only(path) {
-                    continue;
-                }
-                let existing = self.root.join(path);
-                ensure!(
-                    existing.extension().and_then(|value| value.to_str()) == Some("rs")
-                        && existing.is_file(),
-                    "Patch modifies production code: {path}"
-                );
-                let updated = staged_command(&["show", &format!(":{path}")], None);
-                ensure!(
-                    updated.returncode == 0
-                        && rust_production(&fs::read(&existing)?)?
-                            == rust_production(updated.stdout.as_bytes())?,
-                    "Patch modifies production code outside Rust test modules: {path}"
-                );
-            }
         }
         let check = self.command(&["apply", "--check", "-"], Some(patch));
         ensure!(
@@ -349,10 +202,6 @@ impl PatchGate {
         let mut changed = Vec::new();
         for path in untracked.stdout.split('\0').filter(|path| !path.is_empty()) {
             safe_path(&self.root, path)?;
-            ensure!(
-                self.test_only(path),
-                "New production file appeared during execution: {path}"
-            );
             changed.push(path.to_string());
         }
         let tracked = self.command(&["diff", "--name-only", "HEAD", "-z"], None);
@@ -360,17 +209,37 @@ impl PatchGate {
         for path in tracked.stdout.split('\0').filter(|path| !path.is_empty()) {
             let destination = safe_path(&self.root, path)?;
             ensure!(destination.is_file(), "Tracked file was removed: {path}");
-            if !self.test_only(path) {
-                let previous = self.command(&["show", &format!("HEAD:{path}")], None);
+            changed.push(path.to_string());
+        }
+        if let Some(patch) = &self.expected_patch {
+            let temporary = TemporaryIndex::new()?;
+            let environment = [(
+                "GIT_INDEX_FILE".into(),
+                temporary.0.join("index").display().to_string(),
+            )];
+            let indexed = |args: &[&str], input| {
+                let argv = std::iter::once("git")
+                    .chain(args.iter().copied())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                run_env(&argv, Some(&self.root), 600, input, &environment)
+            };
+            ensure!(
+                indexed(&["read-tree", &self.base_commit], None).returncode == 0,
+                "Cannot read recorded base"
+            );
+            if !patch.is_empty() {
                 ensure!(
-                    destination.extension().and_then(|value| value.to_str()) == Some("rs")
-                        && previous.returncode == 0
-                        && rust_production(previous.stdout.as_bytes())?
-                            == rust_production(&fs::read(destination)?)?,
-                    "Production code changed during execution: {path}"
+                    indexed(&["apply", "--cached", "-"], Some(patch)).returncode == 0,
+                    "Accepted patch no longer applies to recorded base"
                 );
             }
-            changed.push(path.to_string());
+            let drift = indexed(&["diff", "--exit-code", "--no-ext-diff", "--", "."], None);
+            let extra = indexed(&["ls-files", "--others", "--exclude-standard", "-z"], None);
+            ensure!(
+                drift.returncode == 0 && extra.returncode == 0 && extra.stdout.is_empty(),
+                "Worktree differs from the accepted patch (unaccepted changes)"
+            );
         }
         Ok(changed)
     }
@@ -417,7 +286,7 @@ mod tests {
     }
 
     fn gate(root: &Path) -> PatchGate {
-        PatchGate::new(root, &["tests/**".into(), "**/tests/**".into()], None).unwrap()
+        PatchGate::new(root, None).unwrap()
     }
 
     fn patch(path: &str, before: &str, after: &str) -> String {
@@ -469,71 +338,15 @@ mod tests {
     }
 
     #[test]
-    fn production_rejection_is_atomic() {
+    fn tests_in_nonstandard_paths_and_embedded_source_are_allowed() {
         let repo = repository();
-        let change = patch(
-            "tests/new.rs",
-            "",
-            "#[test] fn regression() { assert_eq!(1 + 1, 2); }\n",
-        ) + &patch(
-            "app.rs",
-            "pub fn value() -> i32 { 1 }\n",
-            "pub fn value() -> i32 { 2 }\n",
-        );
-        let error = gate(repo.path()).apply(&change).unwrap_err().to_string();
-        assert!(error.contains("production"), "{error}");
-        assert!(!repo.path().join("tests/new.rs").exists());
-        assert!(
-            fs::read_to_string(repo.path().join("app.rs"))
-                .unwrap()
-                .contains("{ 1 }")
-        );
-    }
-
-    #[test]
-    fn rust_test_module_change_preserves_production() {
-        let repo = repository();
-        let before = "pub fn value() -> u8 { 1 }\n#[cfg(test)]\nmod tests { #[test] fn old() { assert_eq!(super::value(), 1); } }\n";
-        fs::create_dir(repo.path().join("src")).unwrap();
-        fs::write(repo.path().join("src/lib.rs"), before).unwrap();
-        git(repo.path(), &["add", "."]);
-        git(repo.path(), &["commit", "-m", "rust fixture"]);
-        let after = before.replace("fn old()", "fn regression()");
-        gate(repo.path())
-            .apply(&patch("src/lib.rs", before, &after))
-            .unwrap();
-        gate(repo.path()).verify_worktree().unwrap();
-        fs::write(repo.path().join("src/lib.rs"), before).unwrap();
-        assert!(
-            gate(repo.path())
-                .apply(&patch(
-                    "src/lib.rs",
-                    before,
-                    &after.replace("{ 1 }", "{ 2 }")
-                ))
-                .unwrap_err()
-                .to_string()
-                .contains("production")
-        );
-    }
-
-    #[test]
-    fn string_fake_test_attribute_and_invalid_rust_do_not_authorize_changes() {
-        let repo = repository();
-        let before = "pub const TEXT: &str = \"#[cfg(test)] mod tests {}\";\n";
-        fs::write(repo.path().join("lib.rs"), before).unwrap();
-        git(repo.path(), &["add", "."]);
-        git(repo.path(), &["commit", "-m", "string fixture"]);
-        assert!(
-            gate(repo.path())
-                .apply(&patch("lib.rs", before, &before.replace("TEXT", "OTHER")))
-                .is_err()
-        );
-        assert!(
-            gate(repo.path())
-                .apply(&patch("lib.rs", before, "#[cfg(test)] mod tests {\n"))
-                .is_err()
-        );
+        let change = patch("checks/value_case.go", "", "package checks\n")
+            + &patch(
+                "app.rs",
+                "pub fn value() -> i32 { 1 }\n",
+                "pub fn value() -> i32 { 1 }\n#[test] fn inline() { assert_eq!(value(), 1); }\n",
+            );
+        gate(repo.path()).apply(&change).unwrap();
     }
 
     #[test]
@@ -607,70 +420,24 @@ mod tests {
     }
 
     #[test]
-    fn execution_rejects_untracked_or_removed_production() {
+    fn accepted_patch_detects_tracked_and_untracked_drift() {
         let repo = repository();
-        fs::write(
-            repo.path().join("new_production.rs"),
-            "pub const VALUE: i32 = 1;\n",
-        )
-        .unwrap();
+        let change = patch("checks/new.rs", "", "#[test] fn test() {}\n");
+        let gate = gate(repo.path()).with_patch(&change);
+        gate.apply(&change).unwrap();
+        gate.verify_worktree().unwrap();
+        fs::write(repo.path().join("app.rs"), "changed\n").unwrap();
         assert!(
-            gate(repo.path())
-                .verify_worktree()
+            gate.verify_worktree()
                 .unwrap_err()
                 .to_string()
-                .contains("production")
+                .contains("accepted patch")
         );
-        fs::remove_file(repo.path().join("new_production.rs")).unwrap();
-        fs::remove_file(repo.path().join("tests/test_app.rs")).unwrap();
-        assert!(
-            gate(repo.path())
-                .verify_worktree()
-                .unwrap_err()
-                .to_string()
-                .contains("removed")
-        );
-    }
-
-    #[test]
-    fn test_path_patterns_respect_wildcards_and_negated_character_classes() {
-        let repo = repository();
-        let custom = PatchGate::new(repo.path(), &["**/tests/**".into()], None).unwrap();
-        assert!(
-            custom
-                .apply(&patch(
-                    "tests/new.rs",
-                    "",
-                    "#[test] fn regression() { assert_eq!(1 + 1, 2); }\n"
-                ))
-                .is_err()
-        );
-        let custom = PatchGate::new(repo.path(), &["tests/{one,two}/**".into()], None).unwrap();
-        assert!(
-            custom
-                .apply(&patch(
-                    "tests/one/new.rs",
-                    "",
-                    "#[test] fn regression() { assert_eq!(1 + 1, 2); }\n"
-                ))
-                .is_err()
-        );
-        let custom = PatchGate::new(repo.path(), &["tests/test_[!a-c]?.rs".into()], None).unwrap();
-        custom
-            .apply(&patch(
-                "tests/test_z1.rs",
-                "",
-                "#[test] fn regression() { assert_eq!(1 + 1, 2); }\n",
-            ))
-            .unwrap();
-        assert!(
-            custom
-                .apply(&patch(
-                    "tests/test_a1.rs",
-                    "",
-                    "#[test] fn regression() { assert_eq!(1 + 1, 2); }\n"
-                ))
-                .is_err()
-        );
+        git(repo.path(), &["checkout", "--", "app.rs"]);
+        fs::write(repo.path().join("extra.rs"), "extra\n").unwrap();
+        assert!(gate.verify_worktree().is_err());
+        fs::remove_file(repo.path().join("extra.rs")).unwrap();
+        fs::remove_file(repo.path().join("checks/new.rs")).unwrap();
+        assert!(gate.verify_worktree().is_err());
     }
 }
