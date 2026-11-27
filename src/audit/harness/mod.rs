@@ -9,7 +9,7 @@ use crate::{
     guards::contracts::{validate, validate_links},
     guards::patch::{PatchGate, safe_path},
     reporting::generate_report,
-    runtime::git::create_workspace,
+    runtime::git::{create_workspace, resolve_target},
     runtime::process::{ignoring_interrupts, interrupted, run},
     state::{HarnessSnapshot, RunLock, Store, now, read_json, write_json},
 };
@@ -617,13 +617,17 @@ pub fn audit(
     harness.state["audit_finalized"] = json!(false);
     harness.save()?;
     let outcome = (|| -> Result<()> {
+        harness.config = resolve_target(caller, config)?;
+        harness.state["config"] = serde_json::to_value(&harness.config)?;
+        harness.save()?;
         progress(&format!(
             "Run {id}: fetch {}/{} and create worktree",
-            config.remote, config.branch
+            harness.config.remote, harness.config.branch
         ));
         {
             let _lock = RunLock::acquire(&harness.directory)?;
-            harness.state["workspace"] = create_workspace(caller, &harness.directory, config, &id)?;
+            harness.state["workspace"] =
+                create_workspace(caller, &harness.directory, &harness.config, &id)?;
             harness.state["status"] = json!("running");
             harness.state["loop_started_at"] = json!(now());
             harness.save()?;
@@ -692,7 +696,7 @@ pub fn audit(
             &mut harness.state,
             &harness.artifacts,
             &harness.execution,
-            config,
+            &harness.config,
         ) {
             progress(&format!(
                 "Test publication failed: {error:#}; retry with aaqe publish {id}"

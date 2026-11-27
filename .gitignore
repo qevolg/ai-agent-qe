@@ -1,5 +1,6 @@
-.aaqe/runs/
+.aaqe/
 .env
 .env.*
 !.env.example
 /target/
+/docs/

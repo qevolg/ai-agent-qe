@@ -2,17 +2,12 @@
 name = "ai-agent-qe"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.100"
 description = "Prompt-driven quality engineering with Codex and retained Docker environments"
 readme = "README.md"
 license = "MIT"
 repository = "https://github.com/qevolg/ai-agent-qe"
 default-run = "aaqe"
-include = [
-  "/Cargo.toml", "/Cargo.lock", "/README*.md", "/LICENSE", "/aaqe.yaml.example",
-  "/install.sh", "/docs/configuration.md",
-  "/src/**/*.rs", "/resources/**/*.md", "/resources/**/*.json", "/tests/**/*.rs",
-]
 
 [lib]
 name = "aaqe"

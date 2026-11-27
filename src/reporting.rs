@@ -433,6 +433,6 @@ fn markdown(state: &Value, document: &Value, artifacts: &Value) -> Result<String
         }
     }
     let id = text(&state["id"]);
-    md.push_str(&format!("### 再次验证命令\n\n```bash\naaqe reproduce {id} --case TEST_ID\naaqe env status {id}\naaqe env shell {id}\naaqe cleanup {id}\n```\n\n`TEST_ID` 替换为实际测试 ID；省略 `--case` 重跑全部已保存测试。自定义运行目录时继续传入相同的 `--state-dir`。清理保留报告、测试补丁、分支及 Worktree。\n\n阶段原始产物、基线和每次执行的进程与测试记录均保存在本报告所在的运行目录中。\n"));
+    md.push_str(&format!("### 再次验证命令\n\n```bash\naaqe reproduce {id} --case TEST_ID\naaqe env status {id}\naaqe env shell {id}\naaqe cleanup {id}\n```\n\n`TEST_ID` 替换为实际测试 ID；省略 `--case` 重跑全部已保存测试。清理保留报告、测试补丁、分支及 Worktree。\n\n阶段原始产物、基线和每次执行的进程与测试记录均保存在本报告所在的运行目录中。\n"));
     Ok(md)
 }

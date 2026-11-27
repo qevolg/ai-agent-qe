@@ -32,7 +32,7 @@ fn reproduction_rejects_active_audits_before_accessing_artifacts() {
 #[test]
 fn terminal_status_during_audit_finalization_rejects_reproduction_and_cleanup() {
     let temp = tempfile::tempdir().unwrap();
-    let store = Store::new(temp.path());
+    let store = Store::new(temp.path().join(".aaqe"));
     let mut state = store
         .create("audit", &Config::default(), temp.path())
         .unwrap();
@@ -44,7 +44,8 @@ fn terminal_status_during_audit_finalization_rejects_reproduction_and_cleanup() 
     let error = aaqe::audit::workflow::reproduce(&store, &mut state, None).unwrap_err();
     assert!(format!("{error:#}").contains("finaliz"), "{error:#}");
     let cleanup = std::process::Command::new(env!("CARGO_BIN_EXE_aaqe"))
-        .args(["--state-dir", temp.path().to_str().unwrap(), "cleanup", &id])
+        .env("HOME", temp.path())
+        .args(["cleanup", &id])
         .output()
         .unwrap();
     assert_eq!(cleanup.status.code(), Some(2));

@@ -298,7 +298,7 @@ fn cli_prompt_options_version_and_invalid_inputs() {
     );
     assert_eq!(
         binary()
-            .args(["--state-dir", "/tmp", "report", "../secret"])
+            .args(["report", "../secret"])
             .output()
             .unwrap()
             .status
@@ -308,7 +308,7 @@ fn cli_prompt_options_version_and_invalid_inputs() {
     let temp = tempfile::tempdir().unwrap();
     let mut child = binary()
         .current_dir(temp.path())
-        .args(["--state-dir", temp.path().join("runs").to_str().unwrap()])
+        .env("HOME", temp.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -322,7 +322,7 @@ fn cli_prompt_options_version_and_invalid_inputs() {
     let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stdout).contains("Describe the product/module"));
-    assert_eq!(fs::read_dir(temp.path().join("runs")).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(temp.path().join(".aaqe")).unwrap().count(), 1);
 }
 
 struct Cleanup {
@@ -369,23 +369,25 @@ fn real_docker_scenario(early_inline: bool) {
     let config_file = root.join("aaqe.yaml");
     let mut config: Value =
         serde_yaml::from_str(&fs::read_to_string(&config_file).unwrap()).unwrap();
-    let mut fixture_command = support::codex(&["--retry-developer"]);
+    let mut fixture_flags = vec!["--retry-developer"];
     if early_inline {
-        fixture_command.push("--early-inline".into());
+        fixture_flags.push("--early-inline");
         config["environment"] = json!({});
         config["baseline"] = json!([]);
     }
-    config["codex"] = json!({"command":fixture_command});
     fs::write(&config_file, serde_yaml::to_string(&config).unwrap()).unwrap();
-    let runs = temp.path().join("runs");
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    support::executable(
+        &bin.join("codex"),
+        json!({"mode":"codex","flags":fixture_flags}),
+    );
+    let runs = temp.path().join(".aaqe");
     let output = binary()
         .current_dir(&root)
-        .args([
-            "--state-dir",
-            runs.to_str().unwrap(),
-            "run",
-            "Verify the documented inclusive bounds",
-        ])
+        .env("HOME", temp.path())
+        .env("PATH", support::path_with(&bin))
+        .args(["run", "Verify the documented inclusive bounds"])
         .output()
         .unwrap();
     let dir = fs::read_dir(&runs).unwrap().next().unwrap().unwrap().path();
@@ -394,14 +396,15 @@ fn real_docker_scenario(early_inline: bool) {
         run: dir.clone(),
         state: state.clone(),
     };
+    let report = read_json(&dir.join("report.json")).unwrap();
     assert!(
         output.status.success(),
-        "{}\n{}\nCoordinator: {}",
+        "{}\n{}\nCoordinator: {}\nCoverage: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
-        fs::read_to_string(dir.join("stages/coordinator/terminal.log")).unwrap_or_default()
+        fs::read_to_string(dir.join("stages/coordinator/terminal.log")).unwrap_or_default(),
+        serde_json::to_string_pretty(&report["execution"]["coverage"]).unwrap()
     );
-    let report = read_json(&dir.join("report.json")).unwrap();
     if early_inline {
         let workspace = Path::new(state["workspace"]["path"].as_str().unwrap());
         assert!(!workspace.join("compose.yaml").exists());
@@ -465,7 +468,8 @@ fn real_docker_scenario(early_inline: bool) {
     fs::remove_file(dir.join("report.md")).unwrap();
     fs::write(dir.join("report.json"), "broken derived report").unwrap();
     let rebuilt = binary()
-        .args(["--state-dir", runs.to_str().unwrap(), "report", &id])
+        .env("HOME", temp.path())
+        .args(["report", &id])
         .output()
         .unwrap();
     assert!(
@@ -479,7 +483,8 @@ fn real_docker_scenario(early_inline: bool) {
     );
     assert!(
         binary()
-            .args(["--state-dir", runs.to_str().unwrap(), "env", "status", &id])
+            .env("HOME", temp.path())
+            .args(["env", "status", &id])
             .output()
             .unwrap()
             .status
@@ -563,7 +568,8 @@ fn real_docker_scenario(early_inline: bool) {
         )
         .unwrap();
         let failed = binary()
-            .args(["--state-dir", runs.to_str().unwrap(), "reproduce", &id])
+            .env("HOME", temp.path())
+            .args(["reproduce", &id])
             .output()
             .unwrap();
         assert_eq!(failed.status.code(), Some(2));
@@ -582,14 +588,8 @@ fn real_docker_scenario(early_inline: bool) {
         aaqe::state::write_json(&dir.join("artifacts/test-developer.json"), &developer).unwrap();
     }
     let replay = binary()
-        .args([
-            "--state-dir",
-            runs.to_str().unwrap(),
-            "reproduce",
-            &id,
-            "--case",
-            "negative-input",
-        ])
+        .env("HOME", temp.path())
+        .args(["reproduce", &id, "--case", "negative-input"])
         .output()
         .unwrap();
     assert!(
@@ -621,7 +621,8 @@ fn real_docker_scenario(early_inline: bool) {
     fs::remove_file(dir.join("report.md")).unwrap();
     fs::create_dir(dir.join("report.md")).unwrap();
     let failed_report = binary()
-        .args(["--state-dir", runs.to_str().unwrap(), "cleanup", &id])
+        .env("HOME", temp.path())
+        .args(["cleanup", &id])
         .output()
         .unwrap();
     assert_eq!(failed_report.status.code(), Some(2));
@@ -642,7 +643,8 @@ fn real_docker_scenario(early_inline: bool) {
     fs::remove_dir(dir.join("report.md")).unwrap();
     for _ in 0..2 {
         let cleanup = binary()
-            .args(["--state-dir", runs.to_str().unwrap(), "cleanup", &id])
+            .env("HOME", temp.path())
+            .args(["cleanup", &id])
             .output()
             .unwrap();
         assert!(
@@ -683,7 +685,8 @@ fn real_docker_scenario(early_inline: bool) {
         assert!(!dir.join("stages").join(stage).join("tmux.json").exists());
     }
     let rejected = binary()
-        .args(["--state-dir", runs.to_str().unwrap(), "reproduce", &id])
+        .env("HOME", temp.path())
+        .args(["reproduce", &id])
         .output()
         .unwrap();
     assert_eq!(rejected.status.code(), Some(2));

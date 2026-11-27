@@ -1,24 +1,14 @@
 # Optional: save as aaqe.yaml in the audited project, or use --config PATH.
-# Defaults shown below. All timeout values are seconds.
-state_dir: ~/.aaqe/runs
-
-git:
-  remote: origin
-  branch: main
+# No configuration file is needed for a normal audit.
 
 codex:
-  command: [codex]
   model: gpt-6.1-sol
 
-timeouts:
-  agent: 7200
-  test: 7200
-  docker: 3600
-
-loop:
-  max_stage_calls: 20
-  max_stage_attempts: 4
-  timeout: 43200
+# Git remote and its default branch are discovered automatically.
+# Override only when auditing a different target.
+# git:
+#   remote: upstream
+#   branch: develop
 
 # Leave empty to discover the product environment from repository evidence.
 environment: {}
@@ -42,6 +32,6 @@ test_paths:
   - .aaqe/tests/**
 
 # Uses authenticated glab on the host; project defaults to the Git remote.
+# Override when an SSH alias hides the GitLab host.
 # publication:
 #   project: https://gitlab.example/group/product
-#   glab_command: [glab]

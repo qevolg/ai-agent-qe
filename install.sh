@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-install_dir="${AAQE_BIN_DIR:-${HOME}/.local/bin}"
-version="${AAQE_VERSION:-latest}"
-release_base="${AAQE_RELEASE_BASE_URL:-https://github.com/qevolg/ai-agent-qe/releases}"
+install_dir="${HOME}/.local/bin"
+version="latest"
+release_base="https://github.com/qevolg/ai-agent-qe/releases"
 work_dir=""
 install_file=""
 
@@ -42,10 +42,16 @@ fi
 
 work_dir="$(mktemp -d)"
 archive_name='aaqe-x86_64-unknown-linux-musl.tar.gz'
-curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 300 \
-    "${download_url}/${archive_name}" -o "${work_dir}/${archive_name}"
-curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 60 \
-    "${download_url}/${archive_name}.sha256" -o "${work_dir}/checksum"
+if ! curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 300 \
+    "${download_url}/${archive_name}" -o "${work_dir}/${archive_name}"; then
+    echo "Could not download AAQE ${version}. A published Release with ${archive_name} is required: ${release_base}" >&2
+    exit 1
+fi
+if ! curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 60 \
+    "${download_url}/${archive_name}.sha256" -o "${work_dir}/checksum"; then
+    echo 'The Release is missing its required SHA-256 file; installation stopped.' >&2
+    exit 1
+fi
 read -r expected_checksum _ < "${work_dir}/checksum" || [[ -n "$expected_checksum" ]]
 [[ "$expected_checksum" =~ ^[a-fA-F0-9]{64}$ ]] || { echo 'Invalid SHA-256 checksum.' >&2; exit 1; }
 actual_checksum="$(sha256sum "${work_dir}/${archive_name}")"

@@ -984,7 +984,7 @@ mod tests {
         fs::create_dir(&workspace).unwrap();
         fs::write(
             workspace.join("compose.yaml"),
-            "services: {runner: {image: 'rust:1.88-slim'}}\n",
+            "services: {runner: {image: 'rust:1.100.0-slim'}}\n",
         )
         .unwrap();
         let calls = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
@@ -996,7 +996,7 @@ mod tests {
             ProcessResult {argv: argv.to_vec(), returncode:0, stdout: if argv.iter().any(|s|s=="inspect") {
                 "[{\"State\":{\"Running\":true}}]".into()
             } else if argv.iter().any(|s|s=="config") {
-                "{\"services\":{\"runner\":{\"image\":\"rust:1.88-slim\"}}}".into()
+                "{\"services\":{\"runner\":{\"image\":\"rust:1.100.0-slim\"}}}".into()
             } else {String::new()}, stderr:String::new(),elapsed:0.0,timed_out:false}
         }));
         runtime.start().unwrap();

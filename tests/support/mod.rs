@@ -44,12 +44,28 @@ pub fn executable(path: &Path, spec: Value) {
     fs::write(path.with_extension("json"), spec.to_string()).unwrap();
 }
 
+pub fn path_with(directory: &Path) -> std::ffi::OsString {
+    let mut paths = vec![directory.to_path_buf()];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    std::env::join_paths(paths).unwrap()
+}
+
 pub fn repository(directory: &Path, rust: bool) -> PathBuf {
     let remote = directory.join("remote.git");
     let root = directory.join("repo");
     fs::create_dir(&root).unwrap();
     for (cwd, args) in [
-        (directory, vec!["init", "--bare", remote.to_str().unwrap()]),
+        (
+            directory,
+            vec![
+                "init",
+                "--bare",
+                "--initial-branch=main",
+                remote.to_str().unwrap(),
+            ],
+        ),
         (root.as_path(), vec!["init", "-b", "main"]),
         (root.as_path(), vec!["config", "user.name", "AAQE Test"]),
         (

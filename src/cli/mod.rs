@@ -5,7 +5,7 @@ use crate::{
     runtime::compose::ComposeEnvironment,
     runtime::process::{install_signals, run},
     runtime::tmux::{cleanup_tmux, worker},
-    state::{RunLock, Store, absolute_path, expand_user, now},
+    state::{RunLock, Store, now},
 };
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand};
@@ -25,8 +25,6 @@ use std::{
 pub struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
-    #[arg(long, global = true)]
-    state_dir: Option<PathBuf>,
     #[command(subcommand)]
     action: Option<Action>,
 }
@@ -119,10 +117,7 @@ fn execute(cli: Cli) -> Result<i32> {
         return Ok(0);
     }
     let caller = std::env::current_dir()?;
-    let mut config = Config::load(&caller, cli.config.as_deref())?;
-    if let Some(directory) = cli.state_dir {
-        config.state_dir = absolute_path(&expand_user(&directory));
-    }
+    let config = Config::load(&caller, cli.config.as_deref())?;
     if cli.action.is_none() || matches!(cli.action, Some(Action::Run { .. })) {
         let prompt = match cli.action {
             Some(Action::Run {

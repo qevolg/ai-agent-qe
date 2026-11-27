@@ -1,10 +1,6 @@
 {
   "type": "object",
   "properties": {
-    "state_dir": {
-      "type": "string",
-      "minLength": 1
-    },
     "git": {
       "type": "object",
       "properties": {
@@ -22,14 +18,6 @@
     "codex": {
       "type": "object",
       "properties": {
-        "command": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          },
-          "minItems": 1
-        },
         "model": {
           "type": "string"
         }
@@ -138,42 +126,6 @@
         "minItems": 1
       }
     },
-    "timeouts": {
-      "type": "object",
-      "properties": {
-        "agent": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "test": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "docker": {
-          "type": "integer",
-          "minimum": 1
-        }
-      },
-      "additionalProperties": false
-    },
-    "loop": {
-      "type": "object",
-      "properties": {
-        "max_stage_calls": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "max_stage_attempts": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "timeout": {
-          "type": "integer",
-          "minimum": 1
-        }
-      },
-      "additionalProperties": false
-    },
     "publication": {
       "type": "object",
       "properties": {
@@ -183,14 +135,6 @@
             "null"
           ],
           "minLength": 1
-        },
-        "glab_command": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          },
-          "minItems": 1
         }
       },
       "additionalProperties": false

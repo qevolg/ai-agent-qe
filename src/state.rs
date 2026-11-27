@@ -141,7 +141,21 @@ impl Store {
         if !Regex::new(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")?.is_match(run_id) {
             bail!("Invalid run ID");
         }
-        let path = self.root.join(run_id);
+        let mut path = self.root.join(run_id);
+        if fs::symlink_metadata(&path)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        {
+            let legacy_root = self.root.join("runs");
+            if fs::symlink_metadata(&legacy_root)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                bail!("Legacy run directory cannot be a symbolic link");
+            }
+            let legacy = legacy_root.join(run_id);
+            if fs::symlink_metadata(&legacy).is_ok() {
+                path = legacy;
+            }
+        }
         if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
             bail!("Run directories cannot be symbolic links");
         }
@@ -205,6 +219,53 @@ mod tests {
     use chrono::{DateTime, Utc};
     use serde_json::json;
     use std::fs;
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_lookup_rejects_a_symbolic_link_to_another_run_store() {
+        let root = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let other = Store::new(external.path());
+        let state = other
+            .create("external audit", &Config::default(), external.path())
+            .unwrap();
+        let id = state["id"].as_str().unwrap();
+        std::os::unix::fs::symlink(external.path(), root.path().join("runs")).unwrap();
+        let current = Store::new(root.path());
+        assert!(current.load(id).is_err());
+        assert!(current.save(&state).is_err());
+        assert_eq!(other.load(id).unwrap(), state);
+    }
+
+    #[test]
+    fn legacy_run_directories_remain_readable_and_writable_without_moving_worktrees() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = Store::new(temp.path().join("runs"));
+        let mut state = old
+            .create("old audit", &Config::default(), temp.path())
+            .unwrap();
+        let id = state["id"].as_str().unwrap().to_owned();
+        let current = Store::new(temp.path());
+        assert_eq!(current.load(&id).unwrap(), state);
+        state["status"] = json!("completed");
+        current.save(&state).unwrap();
+        assert_eq!(old.load(&id).unwrap()["status"], "completed");
+        assert!(!temp.path().join(&id).exists());
+        let new = current
+            .create("new audit", &Config::default(), temp.path())
+            .unwrap();
+        assert!(
+            temp.path()
+                .join(new["id"].as_str().unwrap())
+                .join("run.json")
+                .is_file()
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(temp.path(), temp.path().join("runs/linked")).unwrap();
+            assert!(current.path("linked").is_err());
+        }
+    }
 
     #[test]
     fn new_run_identity_uses_shanghai_wall_time_and_keeps_legacy_ids_readable() {

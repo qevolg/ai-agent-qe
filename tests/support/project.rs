@@ -2,7 +2,7 @@
 use std::{fs, path::Path};
 
 pub fn image() -> String {
-    std::env::var("AAQE_TEST_RUST_IMAGE").unwrap_or_else(|_| "rust:1.88-slim".into())
+    std::env::var("AAQE_TEST_RUST_IMAGE").unwrap_or_else(|_| "rust:1.100.0-slim".into())
 }
 pub const APP: &str = "pub fn bounded_value(value: i32) -> i32 { value.min(10) }\n";
 pub const BASELINE: &str = "#[path = \"../app.rs\"] mod app;\n#[test] fn test_upper_bound() { assert_eq!(app::bounded_value(20), 10); }\n";
@@ -70,7 +70,9 @@ fn main() {
             let mut target_file = false;
             let mut lines = std::collections::BTreeMap::new();
             for line in text.lines() {
-                if let Some(path) = line.strip_prefix("SF:") { target_file = path == "/workspace/app.rs"; }
+                if let Some(path) = line.strip_prefix("SF:") {
+                    target_file = Path::new(path).file_name().is_some_and(|name| name == "app.rs");
+                }
                 if target_file {
                     if let Some(data) = line.strip_prefix("DA:") {
                         let fields = data.split(',').collect::<Vec<_>>();

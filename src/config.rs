@@ -72,9 +72,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             publication: Publication::default(),
-            state_dir: absolute_path(&expand_user(Path::new("~/.aaqe/runs"))),
-            remote: "origin".into(),
-            branch: "main".into(),
+            state_dir: absolute_path(&expand_user(Path::new("~/.aaqe"))),
+            remote: String::new(),
+            branch: String::new(),
             codex_command: vec!["codex".into()],
             model: "gpt-6.1-sol".into(),
             environment: json!({}),
@@ -127,20 +127,14 @@ impl Config {
         }
         let mut config = Self::default();
         if let Some(publication) = data.get("publication") {
-            config.publication = serde_json::from_value(publication.clone())?;
+            config.publication.project = publication["project"].as_str().map(str::to_owned);
         }
         let parent = path.parent().context("Invalid configuration path")?;
-        if let Some(state) = data["state_dir"].as_str() {
-            config.state_dir = absolute_path(&parent.join(expand_user(Path::new(state))));
-        }
         if let Some(remote) = data["git"]["remote"].as_str() {
             config.remote = remote.into();
         }
         if let Some(branch) = data["git"]["branch"].as_str() {
             config.branch = branch.into();
-        }
-        if let Some(command) = data["codex"].get("command") {
-            config.codex_command = serde_json::from_value(command.clone())?;
         }
         if let Some(model) = data["codex"]["model"].as_str() {
             config.model = model.into();
@@ -163,24 +157,6 @@ impl Config {
         if let Some(baseline) = data.get("baseline") {
             config.baseline = serde_json::from_value(baseline.clone())?;
         }
-        if let Some(timeout) = unsigned_integer(&data["timeouts"]["agent"]) {
-            config.agent_timeout = timeout;
-        }
-        if let Some(timeout) = unsigned_integer(&data["timeouts"]["test"]) {
-            config.test_timeout = timeout;
-        }
-        if let Some(timeout) = unsigned_integer(&data["timeouts"]["docker"]) {
-            config.docker_timeout = timeout;
-        }
-        if let Some(value) = unsigned_integer(&data["loop"]["max_stage_calls"]) {
-            config.max_stage_calls = value;
-        }
-        if let Some(value) = unsigned_integer(&data["loop"]["max_stage_attempts"]) {
-            config.max_stage_attempts = value;
-        }
-        if let Some(value) = unsigned_integer(&data["loop"]["timeout"]) {
-            config.run_timeout = value;
-        }
         Ok(config)
     }
 }
@@ -196,8 +172,6 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let directory = temp.path();
         let default = Config::load(directory, None).unwrap();
-        assert_eq!(default.remote, "origin");
-        assert_eq!(default.branch, "main");
         assert_eq!(default.max_stage_calls, 20);
         assert_eq!(default.max_stage_attempts, 4);
         assert_eq!(default.model, "gpt-6.1-sol");
@@ -208,16 +182,13 @@ mod tests {
         assert!(default.state_dir.is_absolute());
         fs::write(
             directory.join("aaqe.yaml"),
-            "loop: {max_stage_calls: 8, max_stage_attempts: 2, timeout: 3600}\nstate_dir: runs\ngit:\n  branch: develop\nenvironment:\n  env_file: private.env\n",
+            "git:\n  branch: develop\ncodex:\n  model: another-model\nenvironment:\n  env_file: private.env\n",
         )
         .unwrap();
         fs::write(directory.join("private.env"), "PASSWORD=do-not-publish\n").unwrap();
         let loaded = Config::load(directory, None).unwrap();
         assert_eq!(loaded.branch, "develop");
-        assert_eq!(loaded.max_stage_calls, 8);
-        assert_eq!(loaded.max_stage_attempts, 2);
-        assert_eq!(loaded.run_timeout, 3600);
-        assert_eq!(loaded.state_dir, directory.join("runs"));
+        assert_eq!(loaded.model, "another-model");
         assert_eq!(
             loaded.environment["env_file"],
             directory.join("private.env").to_str().unwrap()
@@ -243,6 +214,11 @@ mod tests {
             "loop: {max_stage_calls: 0}",
             "loop: {max_stage_attempts: -1}",
             "loop: {timeout: 0}",
+            "state_dir: runs",
+            "codex: {command: [codex]}",
+            "publication: {glab_command: [glab]}",
+            "timeouts: {test: 10}",
+            "loop: {max_stage_calls: 10}",
         ] {
             fs::write(temp.path().join("aaqe.yaml"), content).unwrap();
             assert!(Config::load(temp.path(), None).is_err(), "{content}");
@@ -251,22 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn integral_float_config_timeouts_preserve_json_schema_integer_semantics() {
-        let temp = tempfile::tempdir().unwrap();
-        fs::write(
-            temp.path().join("aaqe.yaml"),
-            "timeouts: {agent: 3.0, test: 4.0, docker: 5.0}\n",
-        )
-        .unwrap();
-        let config = crate::config::Config::load(temp.path(), None).unwrap();
-        assert_eq!(
-            (
-                config.agent_timeout,
-                config.test_timeout,
-                config.docker_timeout
-            ),
-            (3, 4, 5)
-        );
+    fn saved_timeouts_preserve_json_schema_integer_semantics() {
         assert_eq!(crate::config::unsigned_integer(&json!(7.0)), Some(7));
         assert_eq!(crate::config::unsigned_integer(&json!(7.1)), None);
         let saved: crate::config::Config = serde_json::from_value(

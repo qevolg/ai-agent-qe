@@ -16,7 +16,7 @@ fn publication_creates_a_ready_mr_and_recovers_a_lost_journal() {
     let repository = support::repository(temp.path(), false);
     let run = temp.path().join("run");
     fs::create_dir_all(&run).unwrap();
-    let mut config = Config::default();
+    let mut config = aaqe::runtime::git::resolve_target(&repository, &Config::default()).unwrap();
     let workspace = create_workspace(&repository, &run, &config, "create-test").unwrap();
     let root = Path::new(workspace["path"].as_str().unwrap());
     let patch = "--- /dev/null\n+++ b/tests/regression.rs\n@@ -0,0 +1 @@\n+#[test] fn regression() { assert!(false); }\n--- /dev/null\n+++ b/tests/fixture.json\n@@ -0,0 +1 @@\n+{\"value\":1}\n";
@@ -80,7 +80,7 @@ fn publication_pushes_exact_patch_and_reuses_the_remote_mr() {
     let repository = support::repository(temp.path(), false);
     let run = temp.path().join("run");
     fs::create_dir_all(&run).unwrap();
-    let mut config = Config::default();
+    let mut config = aaqe::runtime::git::resolve_target(&repository, &Config::default()).unwrap();
     let workspace = create_workspace(&repository, &run, &config, "publication-test").unwrap();
     let root = Path::new(workspace["path"].as_str().unwrap());
     let patch = "--- /dev/null\n+++ b/tests/regression.rs\n@@ -0,0 +1 @@\n+#[test] fn regression() { assert!(false); }\n";

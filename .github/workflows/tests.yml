@@ -1,31 +1,68 @@
 name: tests
-on: [push, pull_request]
+
+on:
+  push:
+  pull_request:
+
 permissions:
   contents: read
+
 jobs:
   rust:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        toolchain: ['1.88.0', stable]
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
-          toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
-      - run: sudo apt-get update && sudo apt-get install -y tmux
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo build --locked --example aaqe-test-worker
-      - run: cargo test --locked --all-targets
-      - run: cargo build --locked --release
-      - run: cargo package --locked --allow-dirty --target-dir target/package-check
+
+      - name: Install tmux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Build test worker
+        run: cargo build --locked --example aaqe-test-worker
+
+      - name: Run tests
+        run: cargo test --locked --all-targets
+
+      - name: Build release binary
+        run: cargo build --locked --release
+
+      - name: Verify Cargo package
+        run: cargo package --locked --allow-dirty --target-dir target/package-check
+
   docker:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y tmux
-      - run: cargo build --locked --example aaqe-test-worker
-      - run: cargo test --locked --all-targets real_docker_workflow_reproduction_and_owned_cleanup -- --ignored --nocapture
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.100.0
+
+      - name: Install tmux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+
+      - name: Build test worker
+        run: cargo build --locked --example aaqe-test-worker
+
+      - name: Run Docker integration test
+        run: >-
+          cargo test --locked --all-targets
+          real_docker_workflow_reproduction_and_owned_cleanup
+          -- --ignored --nocapture

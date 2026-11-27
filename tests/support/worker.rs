@@ -102,6 +102,31 @@ fn configured(path: &Path, args: &[String]) {
     let spec: Value =
         serde_json::from_slice(&fs::read(path.with_extension("json")).unwrap()).unwrap();
     match spec["mode"].as_str() {
+        Some("codex") => {
+            let mut forwarded: Vec<String> = spec["flags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_owned())
+                .collect();
+            forwarded.extend_from_slice(args);
+            codex::run(&forwarded);
+        }
+        Some("download") => {
+            let url = args.iter().find(|arg| arg.starts_with("https://")).unwrap();
+            let relative = url
+                .strip_prefix("https://github.com/qevolg/ai-agent-qe/releases/")
+                .expect("Unexpected download URL");
+            let output = args.windows(2).find(|pair| pair[0] == "-o").unwrap();
+            if fs::copy(
+                Path::new(spec["root"].as_str().unwrap()).join(relative),
+                &output[1],
+            )
+            .is_err()
+            {
+                std::process::exit(22);
+            }
+        }
         Some("gitlab") => {
             let capture = Path::new(spec["capture"].as_str().unwrap());
             let mut mr = spec["mr"].clone();

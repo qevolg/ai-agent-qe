@@ -226,6 +226,18 @@ fn cancelling_or_timing_out_the_coordinator_stops_separate_stage_processes() {
         thread,
         time::{Duration, Instant},
     };
+    if let Ok(serialized) = std::env::var("AAQE_CANCEL_TEST_CONFIG") {
+        let config: Config = serde_json::from_str(&serialized).unwrap();
+        aaqe::runtime::process::install_signals().unwrap();
+        let state = aaqe::audit::workflow::run_audit(
+            "audit",
+            &std::env::current_dir().unwrap(),
+            &config,
+            &|line| println!("{line}"),
+        )
+        .unwrap();
+        std::process::exit(i32::from(state["status"] != "completed"));
+    }
     for cancellation in [
         "interrupt",
         "timeout",
@@ -237,11 +249,30 @@ fn cancelling_or_timing_out_the_coordinator_stops_separate_stage_processes() {
         repo(temp.path());
         let runs = temp.path().join("runs");
         let _cleanup = Cleanup(runs.clone());
-        let config = temp.path().join("test-config.yaml");
-        fs::write(&config,serde_json::to_string(&json!({"state_dir":runs,"codex":{"command":support::codex(&["--cancel-test",if cancellation == "kill-mcp" {"--kill-mcp-test"}else{"--normal-mcp-test"}])},"loop":{"timeout":if cancellation == "timeout" {3} else {30}}})).unwrap()).unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_aaqe"))
+        let config = Config {
+            state_dir: runs.clone(),
+            codex_command: support::codex(&[
+                "--cancel-test",
+                if cancellation == "kill-mcp" {
+                    "--kill-mcp-test"
+                } else {
+                    "--normal-mcp-test"
+                },
+            ]),
+            run_timeout: if cancellation == "timeout" { 3 } else { 30 },
+            ..Config::default()
+        };
+        let mut child = Command::new(std::env::current_exe().unwrap())
             .current_dir(temp.path())
-            .args(["--config", config.to_str().unwrap(), "run", "audit"])
+            .env(
+                "AAQE_CANCEL_TEST_CONFIG",
+                serde_json::to_string(&config).unwrap(),
+            )
+            .args([
+                "--exact",
+                "cancelling_or_timing_out_the_coordinator_stops_separate_stage_processes",
+                "--nocapture",
+            ])
             .stdout(fs::File::create(temp.path().join("parent.log")).unwrap())
             .stderr(Stdio::null())
             .spawn()

@@ -581,7 +581,15 @@ fn interrupting_audit_preserves_report_and_session_and_stops_codex() {
     let remote = dir.path().join("remote.git");
     fs::create_dir(&repository).unwrap();
     let git = |path: &Path, argv: &[&str]| aaqe::runtime::git::git(path, argv).unwrap();
-    git(dir.path(), &["init", "--bare", remote.to_str().unwrap()]);
+    git(
+        dir.path(),
+        &[
+            "init",
+            "--bare",
+            "--initial-branch=main",
+            remote.to_str().unwrap(),
+        ],
+    );
     git(&repository, &["init", "-b", "main"]);
     git(&repository, &["config", "user.name", "Test User"]);
     git(
@@ -597,21 +605,22 @@ fn interrupting_audit_preserves_report_and_session_and_stops_codex() {
     );
     git(&repository, &["push", "-u", "origin", "main"]);
     let pid_path = dir.path().join("codex.pid");
-    let config = dir.path().join("aaqe.yaml");
-    let state_root = dir.path().join("runs");
-    fs::write(&config, serde_json::to_string(&json!({"state_dir":state_root,"codex":{"command":support::command(json!({"stderr_env":"AAQE_TEST_CURRENT","pid":pid_path,"child":true,"delay_ms":30000}))},"timeouts":{"agent":20}})).unwrap()).unwrap();
+    let bin = dir.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    support::executable(
+        &bin.join("codex"),
+        json!({"stderr_env":"AAQE_TEST_CURRENT","pid":pid_path,"child":true,"delay_ms":30000}),
+    );
+    let state_root = dir.path().join(".aaqe");
     let mut parent = Command::new(env!("CARGO_BIN_EXE_aaqe"))
         .current_dir(&repository)
         .env(
             "AAQE_TEST_CURRENT",
             "current caller 'quotes $literal $(echo unsafe)",
         )
-        .args([
-            "--config",
-            config.to_str().unwrap(),
-            "run",
-            "check this module",
-        ])
+        .env("HOME", dir.path())
+        .env("PATH", support::path_with(&bin))
+        .args(["run", "check this module"])
         .stdout(fs::File::create(dir.path().join("parent.stdout")).unwrap())
         .stderr(fs::File::create(dir.path().join("parent.stderr")).unwrap())
         .spawn()
@@ -686,7 +695,7 @@ fn stuck_tmux_control_times_out_and_kills_its_descendants_after_interrupt() {
         &fake_tmux,
         json!({"pid":dir.path().join("control.pid"),"child":true,"child_pid":dir.path().join("control-child.pid"),"delay_ms":30000}),
     );
-    let runs = dir.path().join("runs");
+    let runs = dir.path().join(".aaqe");
     let run = runs.join("bounded-control");
     write_json(
         &run.join("run.json"),
@@ -703,12 +712,8 @@ fn stuck_tmux_control_times_out_and_kills_its_descendants_after_interrupt() {
     let started = Instant::now();
     let mut command = Command::new(env!("CARGO_BIN_EXE_aaqe"))
         .current_dir(dir.path())
-        .args([
-            "--state-dir",
-            runs.to_str().unwrap(),
-            "cleanup",
-            "bounded-control",
-        ])
+        .env("HOME", dir.path())
+        .args(["cleanup", "bounded-control"])
         .env("PATH", &bin)
         .env("AAQE_CONTROL_PID", &pid)
         .env("AAQE_CONTROL_CHILD_PID", &child_pid)
