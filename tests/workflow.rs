@@ -533,6 +533,21 @@ fn real_docker_scenario(early_inline: bool) {
     );
     assert_eq!(report["execution"]["tests"][0]["result"]["returncode"], 1);
     let id = state["id"].as_str().unwrap().to_owned();
+    fs::remove_file(dir.join("report.md")).unwrap();
+    fs::write(dir.join("report.json"), "broken derived report").unwrap();
+    let rebuilt = binary()
+        .args(["--state-dir", runs.to_str().unwrap(), "report", &id])
+        .output()
+        .unwrap();
+    assert!(
+        rebuilt.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rebuilt.stdout)
+    );
+    assert_eq!(
+        read_json(&dir.join("report.json")).unwrap()["verdicts"],
+        report["verdicts"]
+    );
     assert!(
         binary()
             .args(["--state-dir", runs.to_str().unwrap(), "env", "status", &id])
@@ -593,6 +608,42 @@ fn real_docker_scenario(early_inline: bool) {
             String::from_utf8_lossy(&removed.stderr)
         );
     }
+    if !early_inline {
+        // A later preparation failure must retain an earlier target's evidence.
+        let mut saved = read_json(&dir.join("harness.json")).unwrap();
+        let developer = saved["artifacts"]["test-developer"].clone();
+        let mut second = developer["tests"][0].clone();
+        second["id"] = json!("failed-preparation");
+        second["reproduction_commands"] = json!([["python", "-c", "raise SystemExit(9)"]]);
+        saved["artifacts"]["test-developer"]["tests"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+        aaqe::state::write_json(&dir.join("harness.json"), &saved).unwrap();
+        aaqe::state::write_json(
+            &dir.join("artifacts/test-developer.json"),
+            &saved["artifacts"]["test-developer"],
+        )
+        .unwrap();
+        let failed = binary()
+            .args(["--state-dir", runs.to_str().unwrap(), "reproduce", &id])
+            .output()
+            .unwrap();
+        assert_eq!(failed.status.code(), Some(2));
+        let mut saved = read_json(&dir.join("harness.json")).unwrap();
+        let attempt = &saved["state"]["reproductions"][0];
+        assert_eq!(attempt["status"], "failed");
+        assert_eq!(attempt["records"][0]["test_id"], "negative-input");
+        assert_eq!(
+            attempt["preparations"].as_array().unwrap().last().unwrap()["result"]["returncode"],
+            9
+        );
+        assert_eq!(saved["execution"], report["execution"]);
+        assert_eq!(saved["verdicts"], report["verdicts"]);
+        saved["artifacts"]["test-developer"] = developer.clone();
+        aaqe::state::write_json(&dir.join("harness.json"), &saved).unwrap();
+        aaqe::state::write_json(&dir.join("artifacts/test-developer.json"), &developer).unwrap();
+    }
     let replay = binary()
         .args([
             "--state-dir",
@@ -622,6 +673,29 @@ fn real_docker_scenario(early_inline: bool) {
     let updated = read_json(&dir.join("report.json")).unwrap();
     assert_eq!(updated["execution"], report["execution"]);
     assert_eq!(updated["verdicts"], report["verdicts"]);
+    // Rendering failure must not prevent actual Docker cleanup or state persistence.
+    fs::remove_file(dir.join("report.md")).unwrap();
+    fs::create_dir(dir.join("report.md")).unwrap();
+    let failed_report = binary()
+        .args(["--state-dir", runs.to_str().unwrap(), "cleanup", &id])
+        .output()
+        .unwrap();
+    assert_eq!(failed_report.status.code(), Some(2));
+    let cleaned = read_json(&dir.join("run.json")).unwrap();
+    assert!(cleaned["environment_cleaned_at"].is_string());
+    assert_eq!(cleaned["environment_retained"], false);
+    let runtime = ComposeEnvironment::new(
+        Path::new(cleaned["workspace"]["path"].as_str().unwrap()),
+        &dir,
+        &id,
+        cleaned["environment"].clone(),
+        120,
+    );
+    let mut ps = runtime.arguments(true).unwrap();
+    ps.extend(["ps".into(), "--all".into(), "--quiet".into()]);
+    let remaining = Command::new(&ps[0]).args(&ps[1..]).output().unwrap();
+    assert!(remaining.status.success() && remaining.stdout.is_empty());
+    fs::remove_dir(dir.join("report.md")).unwrap();
     for _ in 0..2 {
         let cleanup = binary()
             .args(["--state-dir", runs.to_str().unwrap(), "cleanup", &id])

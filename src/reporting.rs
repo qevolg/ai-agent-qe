@@ -1,6 +1,6 @@
 use crate::{
     environment::strings,
-    state::{now, read_json, write_json},
+    state::{HarnessSnapshot, now, read_json, write_json},
 };
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -14,6 +14,16 @@ fn array(value: &Value) -> Vec<Value> {
 }
 
 pub fn refresh_report(directory: &Path, state: &Value) -> Result<Value> {
+    if directory.join("harness.json").exists() {
+        let saved = HarnessSnapshot::load(directory)?;
+        return generate_report(
+            directory,
+            &saved.state,
+            &saved.artifacts,
+            &saved.execution,
+            &saved.verdicts,
+        );
+    }
     let previous = read_json(&directory.join("report.json"))?;
     let mut artifacts = json!({});
     let artifact_dir = directory.join("artifacts");
@@ -270,6 +280,25 @@ pub fn generate_report(
         md.push_str("### Reproduction attempts\n\n");
         for attempt in array(&state["reproductions"]) {
             md.push_str(&format!("Attempt: {}\n\n", text(&attempt["at"])));
+            if !attempt["status"].is_null() {
+                md.push_str(&format!(
+                    "Status: {}; phase: {}; attempt record: `{}/reproduction.json`\n\n",
+                    text(&attempt["status"]),
+                    text(&attempt["phase"]),
+                    text(&attempt["directory"])
+                ));
+            }
+            if let Some(error) = attempt["error"].as_str() {
+                md.push_str(&format!("Error: {error}\n\n"));
+            }
+            for preparation in array(&attempt["preparations"]) {
+                md.push_str(&format!(
+                    "- Preparation `{}`: exit {}; evidence: `{}/execution.json`\n",
+                    text(&preparation["test_id"]),
+                    preparation["result"]["returncode"],
+                    text(&preparation["directory"])
+                ));
+            }
             for record in array(&attempt["records"]) {
                 md.push_str(&format!(
                     "- `{}`: exit {}; evidence: `{}/execution.json`\n",

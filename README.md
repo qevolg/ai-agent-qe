@@ -231,8 +231,9 @@ Rust 混合源码文件支持语法树检查：仅可修改顶层 `#[cfg(test)] 
 默认运行目录为 `~/.aaqe/runs/<run-id>/`：
 
 ```text
-run.json
-harness.json            # 持久化当前状态、有效产物和证据
+run.json                # 兼容输出；当前运行以 harness.json 为准
+harness.json            # 带版本的权威快照：状态、有效产物、执行和判定
+operation.lock          # 同一运行的操作互斥锁；保留文件以维持锁的身份
 worktree/
 stages/coordinator/     # 主 TUI 输入、提示词、tmux.json、terminal.log、tools.jsonl
 stages/<stage>/         # 首次调用的 input、prompt、Skill、Schema、输出与进程记录
@@ -244,7 +245,8 @@ environment/            # Compose 定义/快照、所有权、readiness 日志
 environment/probes/     # 有界探测的 process 与 probe.json
 executions/<attempt>/   # 原始 XML、stdout/stderr、执行记录
 executions/rounds/<id>/  # 显式重跑的轮次 execution.json
-execution.json
+reproductions/<id>/     # 独立复现的状态、准备步骤及部分结果记录
+execution.json          # 当前执行的兼容输出；轮次历史通过路径关联
 report.md
 report.json
 ```
@@ -257,9 +259,13 @@ aaqe reproduce RUN_ID --case TEST_ID
 aaqe cleanup RUN_ID
 ```
 
-自定义目录使用 `aaqe --state-dir /path/to/runs report RUN_ID` 等形式。报告结束不停止或删除环境；失败和中断也保留已创建的资源。复现先恢复 Runner、重放保存的依赖安装并检查就绪，再执行测试准备和目标测试，不重新调用 AI。每次复现使用新目录，不覆盖首次失败证据；报告同步追加复现记录，保留首次验证结论。复现前会检查 Worktree 仍处于记录的基准提交。
+自定义目录使用 `aaqe --state-dir /path/to/runs report RUN_ID` 等形式。报告结束不停止或删除环境；失败和中断也保留已创建的资源。复现先恢复 Runner、重放保存的依赖安装并检查就绪，再执行测试准备和目标测试，不重新调用 AI。每次复现先登记尝试，按步骤保存准备结果、已完成用例和失败原因；环境启动失败也有记录，不覆盖原始审计证据和验证结论。复现前会检查 Worktree 仍处于记录的基准提交，并拒绝正在初始化或运行中的审计。
 
-`cleanup` 清理该运行拥有的 tmux 会话和 Compose 资源，保留镜像缓存、外部容器、报告、阶段日志、测试补丁、分支和 Worktree，并同步报告中的清理状态。即使在创建 Docker 环境前已结束或受阻，也能清理该轮 tmux 会话；重复执行可安全跳过已删除的会话。审计仍在运行时拒绝清理。Docker 清理只使用经过完整性检查的 Compose 快照；快照丢失或改变时拒绝删除 Docker 资源，已经完成的 tmux 清理状态仍会保存。需要时由用户另行管理 Worktree 生命周期。同一个运行的复现和清理请顺序执行。
+当前格式的 `report` 从快照重新生成 JSON/Markdown，报告缺失或损坏时也可重建。读取旧 Rust 快照时兼容导入之前只写入 `run.json` 的复现和清理记录；没有快照的旧 Python 运行继续使用原格式。快照仅保存核心数据，可调用阶段和恢复动作在查询时计算。
+
+安装、readiness、测试和阶段进程的 stdout/stderr 完整流式写入日志文件；进程记录每个流保留最多 65,536 字节的首尾摘要及截断标记，MCP 和阶段输入中的日志进一步缩减为摘要。需要解析的 Git/Compose 配置和状态输出继续完整捕获。阶段按角色选择上游产物、已完成尝试和最近环境动作，Developer 重试仍收到实际执行反馈；完整产物和日志可通过记录的路径读取。
+
+`cleanup` 清理该运行拥有的 tmux 会话和 Compose 资源，保留镜像缓存、外部容器、报告、阶段日志、测试补丁、分支和 Worktree，并同步报告中的清理状态。即使在创建 Docker 环境前已结束或受阻，也能清理该轮 tmux 会话；重复执行可安全跳过已删除的会话。审计仍在运行时拒绝清理。Docker 清理只使用经过完整性检查的 Compose 快照；快照丢失或改变时拒绝删除 Docker 资源，已经完成的 tmux 清理状态仍会保存。报告生成失败不会阻止 Docker 清理，已完成的清理状态会保存并返回报告错误。需要时由用户另行管理 Worktree 生命周期。同一运行的 MCP、复现、清理和报告操作通过文件锁互斥；遇到正在执行的操作会返回 busy，请在其结束后重试。
 
 运行文件可能包含私有源代码片段、Compose 解析后的环境值和测试日志，保存在本地私有运行目录，不自动提交或上传。
 

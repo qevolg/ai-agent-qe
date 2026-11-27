@@ -11,13 +11,18 @@ The coordinator may repeat or revisit stages, request additional evidence, finis
 with no candidates, or report a blocker. Rust enforces prerequisites, allowed
 roles, patch protection, real execution evidence, independent validation and
 finite call/time budgets. It does not choose the next stage. Workers return
-structured artifacts; their errors and actual execution results return to the
+structured artifacts; their errors and actual execution summaries return to the
 coordinator as tool results. Product failures are retained as evidence, not
 repaired into passing tests.
 
 The first invocation retains `stages/<role>/` and all existing files. Later
 invocations use `stages/<role>/attempts/<attempt>/`. Each contains input, prompt,
-Skill, schema, output, process logs and a harness result. Accepted
+Skill, schema, output, process logs and a harness result. Role inputs select required
+upstream artifacts, completed attempt summaries and recent environment actions.
+Developer retries retain actual execution feedback; an artifact index points to
+other accepted results for upstream revisits. Complete raw logs stream to disk;
+process summaries retain bounded head/tail output and MCP payloads use smaller
+excerpts. Machine-readable control commands keep full capture. Accepted
 artifacts retain immutable per-attempt copies and the existing latest-artifact
 paths. Re-running an upstream stage invalidates downstream active artifacts and
 verdicts without deleting historical evidence. Developer retries replace the
@@ -37,7 +42,7 @@ interruption, and cancels active background stages while retaining their logs.
 After a validated MCP `finish` response is saved and flushed, its acknowledgement
 allows the outer CLI to generate the report and return. The coordinator remains
 interactive, without the audit timeout; subsequent status calls reload the
-finalized state and further dispatches are rejected. `terminal.log` records the
+finalized state, including later reproductions, and further dispatches are rejected. `terminal.log` records the
 TUI terminal stream using tmux pipe-pane without redirecting Codex's streams.
 The coordinator process record is written when the TUI actually exits.
 
@@ -51,6 +56,17 @@ let shutdown wait for live MCP/stage supervisors while releasing ownership after
 a hard kill. Cleanup discovers the one new coordinator session and legacy nested
 stage sessions with ownership checks. Saved older runs, reports and reproduction
 remain readable.
+
+The versioned `harness.json` stores only state, accepted artifacts, execution and
+verdicts, and is the commit point. `run.json` and `execution.json` are compatibility
+exports. Available stages and recovery actions are derived on query. Store updates
+and MCP reloads use the same snapshot loader. An unversioned snapshot imports only
+post-audit fields from its old run projection; Python runs without a harness keep
+their legacy path. A persistent `operation.lock` inode serializes MCP and
+post-audit operations. Reproduction/cleanup reject an active audit or a busy run.
+Reproduction journals its attempt before startup and saves partial records and
+failures. Reports rebuild from the snapshot without requiring a previous report;
+resource cleanup and state persistence proceed independently of rendering.
 
 Independent background workers preserve separate stage contexts and attempts.
 The persistent TUI keeps the coordinator's conversation available after the audit.

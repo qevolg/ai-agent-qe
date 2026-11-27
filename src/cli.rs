@@ -186,6 +186,9 @@ fn execute(cli: Cli) -> Result<i32> {
     let directory = store.path(state["id"].as_str().context("Missing run identity")?)?;
     match action {
         Action::Report { .. } => {
+            if directory.join("harness.json").exists() || !directory.join("report.md").is_file() {
+                refresh_report(&directory, &state)?;
+            }
             println!("{}", std::fs::read_to_string(directory.join("report.md"))?);
             return Ok(0);
         }
@@ -206,8 +209,8 @@ fn execute(cli: Cli) -> Result<i32> {
                 state["tmux_cleaned_at"] = json!(now());
             }
             store.save(&state)?;
-            refresh_report(&directory, &state)?;
             if state["environment_retained"] != true || !state["environment_cleaned_at"].is_null() {
+                refresh_report(&directory, &state)?;
                 println!("Owned tmux sessions cleaned; reports, branch and worktree retained.");
                 return Ok(0);
             }
@@ -231,11 +234,15 @@ fn execute(cli: Cli) -> Result<i32> {
     );
     match action {
         Action::Cleanup { .. } => {
-            runtime.cleanup()?;
-            state["environment_cleaned_at"] = json!(now());
-            state["environment_retained"] = json!(false);
+            let cleanup = runtime.cleanup();
+            if cleanup.is_ok() {
+                state["environment_cleaned_at"] = json!(now());
+                state["environment_retained"] = json!(false);
+            }
             store.save(&state)?;
-            refresh_report(&directory, &state)?;
+            let report = refresh_report(&directory, &state);
+            cleanup?;
+            report.context("Resources cleaned and state saved, but report refresh failed")?;
             println!(
                 "Owned Docker resources and tmux sessions cleaned; reports, branch and worktree retained."
             );

@@ -3,6 +3,45 @@ use serde_json::json;
 use std::fs;
 
 #[test]
+fn reports_rebuild_from_snapshot_when_derived_files_are_missing_or_corrupt() {
+    use aaqe::{
+        config::Config,
+        state::{Store, read_json, write_json},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::new(temp.path());
+    let mut state = store
+        .create("audit", &Config::default(), temp.path())
+        .unwrap();
+    let id = state["id"].as_str().unwrap().to_owned();
+    let directory = store.path(&id).unwrap();
+    state["status"] = json!("completed");
+    let execution =
+        json!({"baseline":[],"tests":[{"test_id":"original-test","result":{"returncode":1}}]});
+    let verdicts =
+        json!([{"candidate_id":"bug","status":"confirmed","rationale":"original audit"}]);
+    write_json(&directory.join("harness.json"), &json!({"schema_version":1,"state":state,"artifacts":{"bug-hunter":{"candidates":[{"id":"bug","title":"Original candidate"}]}},"execution":execution,"verdicts":verdicts})).unwrap();
+    for corrupt in [false, true] {
+        if corrupt {
+            fs::write(directory.join("report.json"), "broken derived report").unwrap();
+        }
+        let report = refresh_report(&directory, &state).unwrap();
+        assert_eq!(report["execution"], execution);
+        assert_eq!(report["verdicts"], verdicts);
+        assert_eq!(report["candidates"][0]["title"], "Original candidate");
+        assert!(
+            fs::read_to_string(directory.join("report.md"))
+                .unwrap()
+                .contains("Original candidate")
+        );
+        assert_eq!(
+            read_json(&directory.join("report.json")).unwrap()["execution"],
+            execution
+        );
+    }
+}
+
+#[test]
 fn reports_keep_candidate_blockers_and_generated_execution_evidence_distinct() {
     let temp = tempfile::tempdir().unwrap();
     let state = json!({"id":"report-test","status":"blocked","error":"run-level interruption"});
