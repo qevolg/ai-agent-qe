@@ -30,6 +30,7 @@ fn repository(temp: &Path) -> PathBuf {
 struct Agent {
     mode: &'static str,
 }
+
 impl AuditAgent for Agent {
     fn coordinate(&self, harness: &mut aaqe::audit::harness::AuditHarness<'_>) -> Result<()> {
         for stage in aaqe::agents::stage::STAGES {
@@ -88,11 +89,13 @@ impl AuditAgent for Agent {
         Ok(output)
     }
 }
+
 struct Runtime {
     root: PathBuf,
     mode: &'static str,
     workspace: PathBuf,
 }
+
 impl TestRuntime for Runtime {
     fn start(&self) -> Result<()> {
         Ok(())
@@ -329,6 +332,7 @@ struct Cleanup {
     run: PathBuf,
     state: Value,
 }
+
 impl Drop for Cleanup {
     fn drop(&mut self) {
         let _ = cleanup_tmux(&self.run);

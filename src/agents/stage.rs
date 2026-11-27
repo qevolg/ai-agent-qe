@@ -17,6 +17,7 @@ impl Stage {
         Self::Developer,
         Self::Validator,
     ];
+
     pub const fn name(self) -> &'static str {
         match self {
             Self::Explorer => "code-explorer",
@@ -33,6 +34,7 @@ impl Stage {
             .find(|s| s.name() == name)
             .ok_or_else(|| anyhow::anyhow!("Unknown stage: {name}"))
     }
+
     pub const fn resources(self) -> (&'static str, &'static str, &'static str) {
         match self {
             Self::Explorer => (
@@ -63,6 +65,7 @@ impl Stage {
         }
     }
 }
+
 pub const STAGES: [&str; 5] = [
     Stage::Explorer.name(),
     Stage::Hunter.name(),

@@ -15,6 +15,7 @@ pub trait AuditAgent {
         progress: &dyn Fn(&str),
     ) -> Result<Value>;
 }
+
 impl AuditAgent for Codex {
     fn coordinate(&self, harness: &mut crate::audit::harness::AuditHarness<'_>) -> Result<()> {
         Codex::coordinate(self, harness)
@@ -31,6 +32,7 @@ impl AuditAgent for Codex {
         Codex::invoke(self, stage, workspace, directory, inputs, progress)
     }
 }
+
 pub trait TestRuntime {
     fn start(&self) -> Result<()>;
 
@@ -42,6 +44,7 @@ pub trait TestRuntime {
 
     fn logs(&self) -> Result<()>;
 }
+
 impl TestRuntime for ComposeEnvironment {
     fn start(&self) -> Result<()> {
         ComposeEnvironment::start(self)
@@ -59,4 +62,5 @@ impl TestRuntime for ComposeEnvironment {
         ComposeEnvironment::logs(self)
     }
 }
+
 pub type RuntimeFactory<'a> = dyn Fn(&Path, &Path, &str, Value, u64) -> Box<dyn TestRuntime> + 'a;

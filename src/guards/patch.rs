@@ -82,6 +82,7 @@ fn rust_production(source: &[u8]) -> Result<Vec<u8>> {
 }
 
 struct TemporaryIndex(PathBuf);
+
 impl TemporaryIndex {
     fn new() -> Result<Self> {
         let directory =
@@ -95,6 +96,7 @@ impl TemporaryIndex {
         Ok(Self(directory))
     }
 }
+
 impl Drop for TemporaryIndex {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);

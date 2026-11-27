@@ -18,6 +18,7 @@ use std::{
 use tempfile::TempDir;
 
 struct Sessions(TempDir);
+
 impl Sessions {
     fn new() -> Self {
         Self(TempDir::new().unwrap())
@@ -27,6 +28,7 @@ impl Sessions {
         self.0.path()
     }
 }
+
 impl Drop for Sessions {
     fn drop(&mut self) {
         fn clean(path: &Path) {

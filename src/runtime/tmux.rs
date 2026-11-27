@@ -86,6 +86,7 @@ struct WorkerGuard<'a> {
     directory: &'a Path,
     completed: bool,
 }
+
 impl Drop for WorkerGuard<'_> {
     fn drop(&mut self) {
         if !self.completed {

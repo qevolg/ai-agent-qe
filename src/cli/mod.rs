@@ -28,6 +28,7 @@ pub struct Cli {
     #[command(subcommand)]
     action: Option<Action>,
 }
+
 #[derive(Subcommand)]
 enum Action {
     /// Run an audit from a natural-language prompt
@@ -60,6 +61,7 @@ enum Action {
     #[command(name = "__terminal-log", hide = true)]
     TerminalLog { path: PathBuf },
 }
+
 #[derive(Subcommand)]
 enum EnvironmentAction {
     Status {

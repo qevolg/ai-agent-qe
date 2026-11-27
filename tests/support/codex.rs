@@ -20,6 +20,7 @@ struct Client {
     output: BufReader<ChildStdout>,
     sequence: u64,
 }
+
 impl Client {
     fn request(&mut self, method: &str, params: Value) -> Value {
         self.sequence += 1;

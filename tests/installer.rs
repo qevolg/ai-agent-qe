@@ -91,4 +91,5 @@ fn installer_checks_checksum_and_preserves_previous_binary_on_failure() {
     assert!(output.status.success());
     assert!(!String::from_utf8_lossy(&output.stdout).contains("Add this directory to PATH"));
 }
+
 mod support;

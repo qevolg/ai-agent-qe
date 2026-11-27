@@ -263,6 +263,7 @@ impl AuditAgent for Agent {
 struct Runtime {
     root: PathBuf,
 }
+
 impl TestRuntime for Runtime {
     fn start(&self) -> Result<()> {
         Ok(())
@@ -469,6 +470,7 @@ fn interrupted_recovery_reconciles_aliases_without_reversing_restored_patch() {
 struct PreparationAgent {
     mode: &'static str,
 }
+
 impl AuditAgent for PreparationAgent {
     fn invoke(
         &self,
@@ -690,6 +692,7 @@ fn prepared_environment_is_reused_and_selected_tests_rerun_without_developer() {
 }
 
 struct IndependentAgent;
+
 impl AuditAgent for IndependentAgent {
     fn invoke(
         &self,
@@ -783,6 +786,7 @@ fn failed_scoped_baseline_preserves_patch_and_executes_next_independent_test() {
 #[test]
 fn environment_operations_bound_runtime_timeouts_to_remaining_audit_budget() {
     struct BudgetRuntime(Runtime);
+
     impl TestRuntime for BudgetRuntime {
         fn start(&self) -> Result<()> {
             self.0.start()
@@ -829,7 +833,9 @@ fn environment_operations_bound_runtime_timeouts_to_remaining_audit_budget() {
 #[test]
 fn readiness_failure_locks_owned_spec_and_retries_same_runner() {
     use std::{cell::Cell, rc::Rc};
+
     struct RetryAgent;
+
     impl AuditAgent for RetryAgent {
         fn invoke(
             &self,
@@ -866,10 +872,12 @@ fn readiness_failure_locks_owned_spec_and_retries_same_runner() {
             h.finish("blocked", "retry behavior verified")
         }
     }
+
     struct RetryRuntime {
         starts: Rc<Cell<u32>>,
         directory: PathBuf,
     }
+
     impl TestRuntime for RetryRuntime {
         fn start(&self) -> Result<()> {
             fs::create_dir_all(self.directory.join("environment"))?;
@@ -921,7 +929,9 @@ fn readiness_failure_locks_owned_spec_and_retries_same_runner() {
 #[test]
 fn saved_setup_retry_invalidates_validator_on_success_and_failure() {
     use std::{cell::Cell, rc::Rc};
+
     struct RetryAgent;
+
     impl AuditAgent for RetryAgent {
         fn invoke(
             &self,
@@ -961,10 +971,12 @@ fn saved_setup_retry_invalidates_validator_on_success_and_failure() {
             h.finish("blocked", "recovery invalidation verified")
         }
     }
+
     struct RetryRuntime {
         starts: Rc<Cell<usize>>,
         runtime: Runtime,
     }
+
     impl TestRuntime for RetryRuntime {
         fn start(&self) -> Result<()> {
             let starts = self.starts.get() + 1;
@@ -1012,6 +1024,7 @@ fn saved_setup_retry_invalidates_validator_on_success_and_failure() {
 #[test]
 fn trusted_global_baseline_overrides_test_specific_prerequisites() {
     struct TrustedAgent;
+
     impl AuditAgent for TrustedAgent {
         fn invoke(
             &self,
@@ -1068,6 +1081,7 @@ fn trusted_global_baseline_overrides_test_specific_prerequisites() {
 #[test]
 fn baseline_patch_restore_failure_stops_before_empty_baseline_target_and_recovers() {
     struct RestoreAgent;
+
     impl AuditAgent for RestoreAgent {
         fn invoke(
             &self,
@@ -1106,10 +1120,12 @@ fn baseline_patch_restore_failure_stops_before_empty_baseline_target_and_recover
             )
         }
     }
+
     struct RestoreRuntime {
         root: PathBuf,
         execution: Runtime,
     }
+
     impl TestRuntime for RestoreRuntime {
         fn start(&self) -> Result<()> {
             Ok(())

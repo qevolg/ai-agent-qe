@@ -21,6 +21,7 @@ fn merge(target: &mut Value, source: &Value) -> Result<()> {
     target.as_object_mut().unwrap().extend(overrides.clone());
     Ok(())
 }
+
 impl AuditHarness<'_> {
     pub(super) fn implementable(&self) -> bool {
         self.artifacts["test-designer"]["plans"]

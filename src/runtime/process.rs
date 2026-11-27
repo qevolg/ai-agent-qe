@@ -61,6 +61,7 @@ pub fn ignoring_interrupts<T>(function: impl FnOnce() -> T) -> T {
         mask: &'a Cell<bool>,
         previous: bool,
     }
+
     impl Drop for MaskGuard<'_> {
         fn drop(&mut self) {
             self.mask.set(self.previous);
