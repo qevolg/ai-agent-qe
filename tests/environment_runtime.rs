@@ -6,6 +6,135 @@ use std::{
 };
 
 #[test]
+fn dependency_setup_runs_as_root_before_readiness_and_retries_without_replacing_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let calls = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+    let captured = calls.clone();
+    let installed = Arc::new(Mutex::new(false));
+    let available = installed.clone();
+    let runtime = ComposeEnvironment::new(
+        &workspace,
+        &temp.path().join("run"),
+        "setup",
+        json!({
+            "compose":{"services":{"runner":{"image":"fixture"}}},
+            "runner_service":"runner", "setup":[["install-dependency"]],
+            "readiness":[["check-dependency"]]
+        }),
+        5,
+    )
+    .with_executor(Arc::new(move |argv, _| {
+        captured.lock().unwrap().push(argv.to_vec());
+        let mut code = 0;
+        if argv.last().is_some_and(|a| a == "install-dependency") {
+            assert!(argv.windows(2).any(|a| a == ["--user", "0"]));
+            if !*available.lock().unwrap() {
+                code = 1;
+            }
+        }
+        if argv.last().is_some_and(|a| a == "check-dependency") && !*available.lock().unwrap() {
+            code = 1;
+        }
+        ProcessResult {
+            argv: argv.to_vec(),
+            returncode: code,
+            stdout: if argv.iter().any(|a| a == "config") {
+                r#"{"services":{"runner":{"image":"fixture"}}}"#.into()
+            } else {
+                String::new()
+            },
+            stderr: String::new(),
+            elapsed: 0.0,
+            timed_out: false,
+        }
+    }));
+    assert!(runtime.start().unwrap_err().to_string().contains("setup"));
+    assert!(
+        !calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|a| a.last().is_some_and(|s| s == "check-dependency"))
+    );
+    let snapshot = fs::read(runtime.env_dir.join("compose.resolved.json")).unwrap();
+    *installed.lock().unwrap() = true;
+    runtime.start().unwrap();
+    assert_eq!(
+        snapshot,
+        fs::read(runtime.env_dir.join("compose.resolved.json")).unwrap()
+    );
+    let calls = calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|a| a.iter().any(|s| s == "config"))
+            .count(),
+        1
+    );
+    let exec: Vec<_> = calls
+        .iter()
+        .filter(|a| a.iter().any(|s| s == "exec"))
+        .map(|a| a.last().unwrap().as_str())
+        .collect();
+    assert_eq!(
+        exec,
+        [
+            "install-dependency",
+            "install-dependency",
+            "check-dependency"
+        ]
+    );
+    assert_eq!(fs::read_dir(&workspace).unwrap().count(), 0);
+}
+
+#[test]
+fn invalid_setup_is_rejected_before_docker_or_evidence_changes() {
+    for setup in [
+        json!("shell text"),
+        json!([[]]),
+        json!([["bad\u{0}argument"]]),
+        json!([[""]]),
+        json!([vec!["tool"; 65]]),
+    ] {
+        let workspace = tempfile::tempdir().unwrap();
+        let run = tempfile::tempdir().unwrap();
+        let mut spec = json!({"compose":{"services":{"runner":{"image":"fixture"}}},"runner_service":"runner"});
+        spec["setup"] = setup;
+        let runtime = ComposeEnvironment::new(workspace.path(), run.path(), "bad", spec, 5)
+            .with_executor(Arc::new(|_, _| panic!("invalid setup reached Docker")));
+        assert!(runtime.start().is_err());
+        assert!(!runtime.env_dir.exists());
+    }
+}
+
+#[test]
+fn repair_recipes_are_deduplicated_validated_and_loaded_by_a_new_runtime() {
+    let workspace = tempfile::tempdir().unwrap();
+    let run = tempfile::tempdir().unwrap();
+    let runtime = ComposeEnvironment::new(workspace.path(), run.path(), "repair", json!({}), 5);
+    let install = vec![vec!["install".into(), "dependency".into()]];
+    runtime.record_setup(&install).unwrap();
+    runtime.record_setup(&install).unwrap();
+    let before = fs::read(runtime.env_dir.join("dependency-setup.json")).unwrap();
+    for invalid in [
+        vec![],
+        vec![vec![]],
+        vec![vec!["bad\u{0}argument".into()]],
+        (0..33).map(|i| vec![format!("package-{i}")]).collect(),
+    ] {
+        assert!(runtime.record_setup(&invalid).is_err());
+        assert_eq!(
+            before,
+            fs::read(runtime.env_dir.join("dependency-setup.json")).unwrap()
+        );
+    }
+    let restored = ComposeEnvironment::new(workspace.path(), run.path(), "repair", json!({}), 5);
+    assert_eq!(restored.saved_setup().unwrap(), install);
+}
+
+#[test]
 fn inline_compose_is_owned_outside_worktree_and_readiness_retries_reuse_snapshot() {
     let temp = tempfile::tempdir().unwrap();
     let workspace = temp.path().join("worktree");

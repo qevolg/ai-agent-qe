@@ -39,6 +39,7 @@ pub fn schema() -> Value {
     let tool_names: Vec<_> = TOOLS.iter().map(|(name, _)| *name).collect();
     json!({"type":"object","properties":{
         "kind":{"type":"string","enum":["tools","docker","endpoint","ssh_inventory"]},
+        "target":{"type":"string","enum":["runner","host"]},
         "tools":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string","enum":tool_names}},
         "url":{"type":"string","minLength":1,"maxLength":4096},
         "host":{"type":"string","minLength":1,"maxLength":253},
@@ -66,6 +67,45 @@ fn token(value: &str, extra: &str) -> bool {
 
 /// Evidence includes unsuccessful process results; malformed requests never execute.
 pub fn inspect(workspace: &Path, directory: &Path, probe: &Value, timeout: u64) -> Result<Value> {
+    ensure!(
+        probe["target"] != "runner",
+        "Prepare a runner before probing test dependencies"
+    );
+    inspect_scoped(workspace, directory, probe, timeout, None)
+}
+
+pub fn inspect_runner(
+    workspace: &Path,
+    directory: &Path,
+    probe: &Value,
+    timeout: u64,
+    prefix: &[String],
+    service: &str,
+) -> Result<Value> {
+    ensure!(
+        probe["target"] != "host",
+        "Host probes cannot execute in a runner"
+    );
+    ensure!(
+        matches!(probe["kind"].as_str(), Some("tools" | "endpoint")),
+        "Only tools and endpoint probes execute in a runner"
+    );
+    inspect_scoped(
+        workspace,
+        directory,
+        probe,
+        timeout,
+        Some((prefix, service)),
+    )
+}
+
+fn inspect_scoped(
+    workspace: &Path,
+    directory: &Path,
+    probe: &Value,
+    timeout: u64,
+    runner: Option<(&[String], &str)>,
+) -> Result<Value> {
     ensure!(timeout > 0, "Probe timeout must be positive");
     let timeout = timeout.min(60);
     jsonschema::validator_for(&schema())?
@@ -73,11 +113,12 @@ pub fn inspect(workspace: &Path, directory: &Path, probe: &Value, timeout: u64) 
         .map_err(|_| anyhow::anyhow!("Invalid environment probe"))?;
     let kind = required(probe, "kind")?;
     let allowed: &[&str] = match kind {
-        "tools" => &["kind", "tools"],
-        "docker" => &["kind"],
-        "endpoint" => &["kind", "url"],
+        "tools" => &["kind", "target", "tools"],
+        "docker" => &["kind", "target"],
+        "endpoint" => &["kind", "target", "url"],
         "ssh_inventory" => &[
             "kind",
+            "target",
             "host",
             "user",
             "port",
@@ -262,8 +303,19 @@ pub fn inspect(workspace: &Path, directory: &Path, probe: &Value, timeout: u64) 
             break;
         }
         let remaining = timeout - elapsed;
-        let mut result =
-            run_env_bounded(argv, Some(workspace), remaining, None, &env, CAPTURE_LIMIT);
+        let mut wrapped = Vec::new();
+        if let Some((prefix, _)) = runner {
+            wrapped.extend_from_slice(prefix);
+        }
+        wrapped.extend_from_slice(argv);
+        let mut result = run_env_bounded(
+            &wrapped,
+            Some(workspace),
+            remaining,
+            None,
+            &env,
+            CAPTURE_LIMIT,
+        );
         if let Some(password) = &password {
             for text in &mut result.argv {
                 *text = text.replace(password, "[REDACTED]");
@@ -304,7 +356,7 @@ pub fn inspect(workspace: &Path, directory: &Path, probe: &Value, timeout: u64) 
     if askpass.exists() {
         fs::remove_file(askpass)?;
     }
-    let mut evidence = json!({"probe":probe,"directory":directory,"capture_limit_bytes":CAPTURE_LIMIT,"budget_exhausted":budget_exhausted,"success":!budget_exhausted && results.iter().all(|result|result.returncode == 0),"results":results});
+    let mut evidence = json!({"probe":probe,"target":if runner.is_some() { "runner" } else { "host" },"runner_service":runner.map(|(_, service)| service),"directory":directory,"capture_limit_bytes":CAPTURE_LIMIT,"budget_exhausted":budget_exhausted,"success":!budget_exhausted && results.iter().all(|result|result.returncode == 0),"results":results});
     // A caller can accidentally reuse a password as another field. Redact the entire
     // evidence document as well as process streams before it reaches disk.
     if let Some(password) = password {

@@ -39,6 +39,30 @@ pub fn strings(value: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+pub fn command_list(value: &Value, label: &str) -> Result<Vec<Vec<String>>> {
+    let commands = value
+        .as_array()
+        .with_context(|| format!("{label} must contain argv arrays"))?;
+    ensure!(
+        commands.len() <= 32,
+        "Too many {label} commands (maximum 32)"
+    );
+    for command in commands {
+        let argv = command
+            .as_array()
+            .with_context(|| format!("{label} must contain argv arrays"))?;
+        ensure!(
+            !argv.is_empty()
+                && argv.len() <= 64
+                && argv.iter().all(|arg| arg
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty() && s.len() <= 8192 && !s.contains('\0'))),
+            "Invalid {label} argv"
+        );
+    }
+    Ok(serde_json::from_value(value.clone())?)
+}
+
 impl ComposeEnvironment {
     pub fn new(workspace: &Path, run_dir: &Path, run_id: &str, spec: Value, timeout: u64) -> Self {
         let run_dir = absolute_path(run_dir);
@@ -56,6 +80,54 @@ impl ComposeEnvironment {
     pub fn with_executor(mut self, execute: Executor) -> Self {
         self.execute = execute;
         self
+    }
+
+    pub fn record_setup(&self, commands: &[Vec<String>]) -> Result<()> {
+        ensure!(
+            !commands.is_empty(),
+            "Dependency repair requires nonempty setup commands"
+        );
+        command_list(&json!(commands), "setup")?;
+        ensure!(
+            !self.run_dir.starts_with(&self.workspace),
+            "Environment artifacts must be outside the worktree"
+        );
+        let mut saved = self.saved_setup()?;
+        for command in commands {
+            if !saved.contains(command) {
+                saved.push(command.clone());
+            }
+        }
+        command_list(&json!(saved), "setup")?;
+        write_json(&self.env_dir.join("dependency-setup.json"), &json!(saved))
+    }
+
+    pub fn saved_setup(&self) -> Result<Vec<Vec<String>>> {
+        let path = self.env_dir.join("dependency-setup.json");
+        if path.exists() {
+            command_list(&read_json(&path)?, "setup")
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    pub fn inspect(&self, probe: &Value, timeout: u64) -> Result<Value> {
+        let runner = self.spec["runner_service"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .context("Prepare a runner before probing test dependencies")?;
+        let mut prefix = self
+            .arguments(true)
+            .context("Prepare a runner before probing test dependencies")?;
+        prefix.extend(["exec".into(), "-T".into(), runner.into()]);
+        crate::environment_probe::inspect_runner(
+            &self.workspace,
+            &self.env_dir.join("probes"),
+            probe,
+            timeout,
+            &prefix,
+            runner,
+        )
     }
     pub fn arguments(&self, resolved: bool) -> Result<Vec<String>> {
         let mut argv = vec![
@@ -163,6 +235,15 @@ impl ComposeEnvironment {
             "Environment artifacts must be outside the worktree"
         );
         self.validate_spec()?;
+        let mut setup = match self.spec.get("setup") {
+            Some(value) => command_list(value, "setup")?,
+            None => vec![],
+        };
+        for command in self.saved_setup()? {
+            if !setup.contains(&command) {
+                setup.push(command);
+            }
+        }
         fs::create_dir_all(&self.env_dir)?;
         fs::create_dir_all(&self.results)?;
         let runner = self.spec["runner_service"]
@@ -194,9 +275,25 @@ impl ComposeEnvironment {
             }
         }
         let mut argv = self.arguments(true)?;
+        argv.extend(["up".into(), "-d".into()]);
+        if !setup.is_empty() {
+            let mut launch = argv.clone();
+            launch.extend(unique.clone());
+            self.checked_until(&launch, "start", Some(deadline))?;
+            for (index, command) in setup.iter().enumerate() {
+                let mut install = self.arguments(true)?;
+                install.extend([
+                    "exec".into(),
+                    "-T".into(),
+                    "--user".into(),
+                    "0".into(),
+                    runner.into(),
+                ]);
+                install.extend(command.clone());
+                self.checked_until(&install, &format!("setup-{index}"), Some(deadline))?;
+            }
+        }
         argv.extend([
-            "up".into(),
-            "-d".into(),
             "--wait".into(),
             "--wait-timeout".into(),
             crate::config::unsigned_integer(&self.spec["readiness_timeout"])
@@ -240,25 +337,9 @@ impl ComposeEnvironment {
                 "Cannot supply both compose_files and inline compose"
             );
         }
-        if let Some(readiness) = self.spec.get("readiness") {
-            let commands = readiness
-                .as_array()
-                .context("Readiness must contain argv arrays")?;
-            ensure!(commands.len() <= 32, "Too many readiness commands");
-            for command in commands {
-                let argv = command
-                    .as_array()
-                    .context("Readiness must contain argv arrays")?;
-                ensure!(
-                    !argv.is_empty()
-                        && argv.len() <= 64
-                        && argv
-                            .iter()
-                            .all(|arg| arg.as_str().is_some_and(|s| !s.is_empty()
-                                && s.len() <= 8192
-                                && !s.contains('\0'))),
-                    "Invalid readiness argv"
-                );
+        for label in ["readiness", "setup"] {
+            if let Some(commands) = self.spec.get(label) {
+                command_list(commands, label)?;
             }
         }
         Ok(())

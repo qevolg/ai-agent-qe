@@ -3,6 +3,63 @@ use serde_json::json;
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
 #[test]
+fn probe_contract_accepts_an_explicit_runner_or_host_target() {
+    let validator = jsonschema::validator_for(&schema()).unwrap();
+    assert!(validator.is_valid(&json!({"kind":"tools","target":"runner","tools":["mvn"]})));
+    assert!(
+        validator.is_valid(&json!({"kind":"endpoint","target":"host","url":"http://example.test"}))
+    );
+    assert!(!validator.is_valid(&json!({"kind":"tools","target":"remote","tools":["mvn"]})));
+}
+
+#[test]
+fn runner_probe_executes_in_compose_and_never_falls_back_to_host_tools() {
+    if std::env::var_os("AAQE_RUNNER_PROBE_CHILD").is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker = temp.path().join("docker");
+        fs::write(&docker, "#!/bin/sh\n[ \"$1\" = compose ] && [ \"$2\" = exec ] && [ \"$3\" = -T ] && [ \"$4\" = runner ] && [ \"$5\" = mvn ] && [ \"$6\" = --version ] || exit 99\nprintf 'Maven from runner\\n'\n").unwrap();
+        fs::set_permissions(docker, fs::Permissions::from_mode(0o700)).unwrap();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "runner_probe_executes_in_compose_and_never_falls_back_to_host_tools",
+                "--nocapture",
+            ])
+            .env("AAQE_RUNNER_PROBE_CHILD", "1")
+            .env("PATH", temp.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    let workspace = tempfile::tempdir().unwrap();
+    let evidence = tempfile::tempdir().unwrap();
+    let prefix = ["docker", "compose", "exec", "-T", "runner"].map(String::from);
+    let result = aaqe::environment_probe::inspect_runner(
+        workspace.path(),
+        evidence.path(),
+        &json!({"kind":"tools","tools":["mvn"]}),
+        3,
+        &prefix,
+        "runner",
+    )
+    .unwrap();
+    assert_eq!(result["target"], "runner");
+    assert_eq!(result["runner_service"], "runner");
+    assert_eq!(result["success"], true);
+    assert_eq!(result["results"][0]["stdout"], "Maven from runner\n");
+    assert!(
+        inspect(
+            workspace.path(),
+            evidence.path(),
+            &json!({"kind":"tools","target":"runner","tools":["mvn"]}),
+            3
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn ssh_and_go_tool_inventory_use_their_supported_version_commands() {
     if std::env::var_os("AAQE_TOOL_VERSION_CHILD").is_none() {
         let temp = tempfile::tempdir().unwrap();
