@@ -348,7 +348,10 @@ impl ComposeEnvironment {
             self.create_snapshot(runner, deadline)?;
         }
         self.stop_pending_setup()?;
-        let mut services = strings(&self.spec["services"]);
+        let product_services = self.product_docker_services()?;
+        let mut services = product_services
+            .clone()
+            .unwrap_or_else(|| strings(&self.spec["services"]));
         if !services.iter().any(|s| s == runner) {
             services.push(runner.into());
         }
@@ -360,6 +363,10 @@ impl ComposeEnvironment {
         }
         let mut argv = self.arguments(true)?;
         argv.extend(["up".into(), "-d".into()]);
+        if product_services.is_some() {
+            // An external product endpoint must never be replaced by a Compose dependency.
+            argv.push("--no-deps".into());
+        }
         if !setup.is_empty() {
             let mut launch = argv.clone();
             launch.extend(unique.clone());
@@ -438,7 +445,47 @@ impl ComposeEnvironment {
                 command_list(commands, label)?;
             }
         }
+        self.product_docker_services()?;
         Ok(())
+    }
+
+    fn product_docker_services(&self) -> Result<Option<Vec<String>>> {
+        let Some(manifest) = self.spec.get("product_services") else {
+            return Ok(None);
+        };
+        let manifest = manifest
+            .as_array()
+            .context("Product services must be a service manifest array")?;
+        let runner = self.spec["runner_service"]
+            .as_str()
+            .filter(|service| !service.is_empty())
+            .context("No test runner service was identified")?;
+        let mut targets = Vec::new();
+        for service in manifest {
+            match service["source"].as_str() {
+                Some("external") => ensure!(
+                    service.get("compose_service").is_some_and(Value::is_null),
+                    "External product services must have compose_service null"
+                ),
+                Some("docker") => {
+                    let target = service["compose_service"]
+                        .as_str()
+                        .filter(|target| !target.is_empty())
+                        .context("Docker product services require a nonempty compose_service")?;
+                    ensure!(
+                        target != runner,
+                        "Docker product service must be separate from the runner: {target}"
+                    );
+                    ensure!(
+                        !targets.iter().any(|existing| existing == target),
+                        "Docker product service targets must be unique: {target}"
+                    );
+                    targets.push(target.to_owned());
+                }
+                _ => bail!("Product service source must be external or docker"),
+            }
+        }
+        Ok(Some(targets))
     }
 
     fn create_snapshot(&self, runner: &str, deadline: std::time::Instant) -> Result<()> {
@@ -491,6 +538,14 @@ impl ComposeEnvironment {
             services.contains_key(runner),
             "Runner service is absent from Compose configuration"
         );
+        if let Some(targets) = self.product_docker_services()? {
+            for target in targets {
+                ensure!(
+                    services.contains_key(&target),
+                    "Docker product service is absent from Compose configuration: {target}"
+                );
+            }
+        }
         for service in services.values() {
             ensure!(
                 service["container_name"].as_str().is_none_or(str::is_empty),
@@ -647,11 +702,262 @@ impl ComposeEnvironment {
 #[cfg(test)]
 mod tests {
     use crate::{runtime::compose::ComposeEnvironment, runtime::process::ProcessResult};
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::{
         fs,
         sync::{Arc, Mutex},
     };
+
+    fn product_runtime(
+        temp: &tempfile::TempDir,
+        spec: Value,
+        rendered: Value,
+    ) -> (ComposeEnvironment, Arc<Mutex<Vec<Vec<String>>>>) {
+        let workspace = temp.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let captured = calls.clone();
+        let runtime = ComposeEnvironment::new(
+            &workspace,
+            &temp.path().join("run"),
+            "product-services",
+            spec,
+            5,
+        )
+        .with_executor(Arc::new(move |argv, _| {
+            captured.lock().unwrap().push(argv.to_vec());
+            ProcessResult {
+                argv: argv.to_vec(),
+                returncode: 0,
+                stdout: if argv.iter().any(|arg| arg == "config") {
+                    rendered.to_string()
+                } else {
+                    String::new()
+                },
+                stderr: String::new(),
+                elapsed: 0.0,
+                timed_out: false,
+            }
+        }));
+        (runtime, calls)
+    }
+
+    #[test]
+    fn product_mixed_services_launch_only_declared_docker_targets_without_dependencies() {
+        let temp = tempfile::tempdir().unwrap();
+        let compose = json!({"services":{
+            "runner":{"image":"fixture","depends_on":["db","adapter"]},
+            "db":{"image":"database","depends_on":["adapter"]},
+            "adapter":{"image":"external-stand-in"},
+            "unrelated":{"image":"unrelated"}
+        }});
+        let (runtime, calls) = product_runtime(
+            &temp,
+            json!({
+                "compose":compose,"runner_service":"runner",
+                "services":["adapter","unrelated"],
+                "setup":[["install-tools"]],
+                "product_services":[
+                    {"id":"database","name":"Database","source":"docker","endpoint":null,
+                     "compose_service":"db","version":null,"check":["check-db"]},
+                    {"id":"adapter","name":"Adapter","source":"external","endpoint":"http://remote:6041",
+                     "compose_service":null,"version":null,"check":["check-adapter"]}
+                ]
+            }),
+            compose,
+        );
+        runtime.start().unwrap();
+        let calls = calls.lock().unwrap();
+        let launches: Vec<_> = calls
+            .iter()
+            .filter_map(|argv| {
+                argv.iter()
+                    .position(|arg| arg == "up")
+                    .map(|index| &argv[index..])
+            })
+            .collect();
+        assert_eq!(
+            launches,
+            vec![
+                ["up", "-d", "--no-deps", "db", "runner"].as_slice(),
+                [
+                    "up",
+                    "-d",
+                    "--no-deps",
+                    "--wait",
+                    "--wait-timeout",
+                    "600",
+                    "db",
+                    "runner"
+                ]
+                .as_slice()
+            ]
+        );
+    }
+
+    #[test]
+    fn product_external_only_services_launch_runner_without_local_replacements() {
+        let temp = tempfile::tempdir().unwrap();
+        let compose = json!({"services":{
+            "runner":{"image":"fixture","depends_on":["db"]},
+            "db":{"image":"external-stand-in"}
+        }});
+        let (runtime, calls) = product_runtime(
+            &temp,
+            json!({
+                "compose":compose,"runner_service":"runner","services":["db"],
+                "product_services":[
+                    {"id":"database","name":"Database","source":"external","endpoint":"remote:6030",
+                     "compose_service":null,"version":null,"check":["check-db"]}
+                ]
+            }),
+            compose,
+        );
+        runtime.start().unwrap();
+        let calls = calls.lock().unwrap();
+        let launch = calls
+            .iter()
+            .find(|argv| argv.iter().any(|arg| arg == "up"))
+            .unwrap();
+        let index = launch.iter().position(|arg| arg == "up").unwrap();
+        assert_eq!(
+            &launch[index..],
+            [
+                "up",
+                "-d",
+                "--no-deps",
+                "--wait",
+                "--wait-timeout",
+                "600",
+                "runner"
+            ]
+        );
+    }
+
+    #[test]
+    fn product_services_reject_docker_target_missing_from_rendered_compose_before_launch() {
+        let temp = tempfile::tempdir().unwrap();
+        let compose = json!({"services":{"runner":{"image":"fixture"}}});
+        let (runtime, calls) = product_runtime(
+            &temp,
+            json!({
+                "compose":compose,"runner_service":"runner",
+                "product_services":[
+                    {"id":"database","name":"Database","source":"docker","endpoint":null,
+                     "compose_service":"missing-db","version":null,"check":["check-db"]}
+                ]
+            }),
+            compose,
+        );
+        let error = runtime.start().unwrap_err().to_string();
+        assert!(error.contains("missing-db"), "{error}");
+        assert!(!runtime.env_dir.join("ownership.json").exists());
+        assert!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|argv| !argv.iter().any(|arg| arg == "up"))
+        );
+    }
+
+    #[test]
+    fn product_services_reject_ambiguous_or_invalid_target_declarations_before_docker() {
+        for manifest in [
+            json!([{"source":"docker","compose_service":"runner"}]),
+            json!([{"source":"docker","compose_service":"db"},{"source":"docker","compose_service":"db"}]),
+            json!([{"source":"external","compose_service":"db"}]),
+            json!([{"source":"docker","compose_service":null}]),
+            json!([{"source":"fallback","compose_service":"db"}]),
+            json!(null),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let compose =
+                json!({"services":{"runner":{"image":"fixture"},"db":{"image":"database"}}});
+            let (runtime, calls) = product_runtime(
+                &temp,
+                json!({
+                    "compose":compose,"runner_service":"runner","product_services":manifest
+                }),
+                compose,
+            );
+            assert!(
+                runtime.start().is_err(),
+                "accepted invalid manifest: {manifest}"
+            );
+            assert!(calls.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn product_service_selection_is_immutable_after_ownership() {
+        let temp = tempfile::tempdir().unwrap();
+        let compose = json!({"services":{"runner":{"image":"fixture"},"db":{"image":"database"}}});
+        let (mut runtime, calls) = product_runtime(
+            &temp,
+            json!({
+                "compose":compose,"runner_service":"runner","product_services":[]
+            }),
+            compose,
+        );
+        runtime.start().unwrap();
+        let count = calls.lock().unwrap().len();
+        runtime.spec["product_services"] = json!([
+            {"id":"database","name":"Database","source":"docker","endpoint":null,
+             "compose_service":"db","version":null,"check":["check-db"]}
+        ]);
+        assert!(
+            runtime
+                .start()
+                .unwrap_err()
+                .to_string()
+                .contains("immutable")
+        );
+        assert_eq!(calls.lock().unwrap().len(), count);
+    }
+
+    #[test]
+    fn legacy_service_selection_keeps_declared_services_and_automatic_dependencies() {
+        let temp = tempfile::tempdir().unwrap();
+        let compose = json!({"services":{
+            "runner":{"image":"fixture","depends_on":["db"]},
+            "db":{"image":"database"}
+        }});
+        let (runtime, calls) = product_runtime(
+            &temp,
+            json!({
+                "compose":compose,"runner_service":"runner","services":["db","db"],
+                "setup":[["install-tools"]]
+            }),
+            compose,
+        );
+        runtime.start().unwrap();
+        let calls = calls.lock().unwrap();
+        let launches: Vec<_> = calls
+            .iter()
+            .filter_map(|argv| {
+                argv.iter()
+                    .position(|arg| arg == "up")
+                    .map(|index| &argv[index..])
+            })
+            .collect();
+        assert_eq!(
+            launches,
+            vec![
+                ["up", "-d", "db", "runner"].as_slice(),
+                [
+                    "up",
+                    "-d",
+                    "--wait",
+                    "--wait-timeout",
+                    "600",
+                    "db",
+                    "runner"
+                ]
+                .as_slice()
+            ]
+        );
+    }
 
     #[test]
     fn dependency_setup_runs_as_root_before_readiness_and_retries_without_replacing_snapshot() {

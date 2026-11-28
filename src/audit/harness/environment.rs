@@ -42,7 +42,8 @@ impl AuditHarness<'_> {
             .map(|p| p["test_id"].clone())
             .collect();
         let mut actions = vec!["status"];
-        let available: Vec<_> = STAGES
+        let available: Vec<_> = self
+            .stages()
             .iter()
             .filter(|stage| self.stage_gate(stage, "status").is_ok())
             .copied()
@@ -57,7 +58,9 @@ impl AuditHarness<'_> {
             }
             if self.operation_gate().is_ok() {
                 actions.extend(["inspect_environment", "prepare_environment"]);
-                if self.artifacts.get("test-developer").is_some() {
+                if self.artifacts.get("test-developer").is_some()
+                    || self.artifacts.get("product-executor").is_some()
+                {
                     actions.push("execute_tests");
                 }
             }
@@ -65,7 +68,7 @@ impl AuditHarness<'_> {
         json!({"blocked_plan_ids":blocked,"permitted_next_actions":actions,"permitted_stages":available,"classification_action":"Return to test-designer to change semantic blockers; dispatch instructions cannot override them"})
     }
 
-    fn operation_gate(&self) -> Result<u64> {
+    pub(super) fn operation_gate(&self) -> Result<u64> {
         ensure!(
             crate::runtime::policy::denial(&self.directory).is_none(),
             "Audit terminated after a safety policy denial"
@@ -94,7 +97,7 @@ impl AuditHarness<'_> {
         Ok(remaining)
     }
 
-    fn remaining_time(&self) -> Result<u64> {
+    pub(super) fn remaining_time(&self) -> Result<u64> {
         let elapsed = chrono::Utc::now()
             .signed_duration_since(chrono::DateTime::parse_from_rfc3339(
                 self.state["loop_started_at"]
@@ -188,7 +191,12 @@ impl AuditHarness<'_> {
             let mut spec = if self.state["environment"].is_object() {
                 self.state["environment"].clone()
             } else {
-                self.artifacts["code-explorer"]["environment"].clone()
+                self.artifacts[if self.product_workflow() {
+                    "product-explorer"
+                } else {
+                    "code-explorer"
+                }]["environment"]
+                    .clone()
             };
             if !spec.is_object() {
                 spec = json!({});
@@ -197,6 +205,17 @@ impl AuditHarness<'_> {
                 merge(&mut spec, &explicit)?;
             }
             merge(&mut spec, &self.config.environment)?;
+            if self.product_workflow() {
+                let explorer = self
+                    .artifacts
+                    .get("product-explorer")
+                    .context("Prepare product services only after product-explorer")?;
+                crate::guards::product::validate_services(
+                    explorer,
+                    self.state["prompt"].as_str().unwrap(),
+                )?;
+                spec["product_services"] = explorer["services"].clone();
+            }
             ensure!(
                 spec["runner_service"]
                     .as_str()
@@ -249,6 +268,9 @@ impl AuditHarness<'_> {
     }
 
     pub fn execute_tests(&mut self, test_ids: Option<Vec<String>>) -> Result<Value> {
+        if self.product_workflow() {
+            return self.reexecute_product(test_ids);
+        }
         let result = (|| {
             self.operation_gate()?;
             let mut output = self

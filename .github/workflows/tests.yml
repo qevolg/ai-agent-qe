@@ -72,3 +72,8 @@ jobs:
           cargo test --locked --test real_services
           real_docker_target_services_and_stopped_service_blocking
           -- --ignored --nocapture
+
+      - name: Verify documented product scenarios and explicit external endpoints
+        run: >-
+          cargo test --locked --test product_services
+          -- --ignored --nocapture

@@ -268,6 +268,9 @@ pub fn reproduce(store: &Store, state: &mut Value, case_id: Option<&str>) -> Res
         state["environment"].is_object(),
         "This run has no test environment"
     );
+    if state["workflow"] == "product" {
+        return super::product::reproduce(store, state, &directory, case_id);
+    }
     let config: Config = serde_json::from_value(state["config"].clone())?;
     let artifact = if directory.join("harness.json").exists() {
         HarnessSnapshot::load(&directory)?

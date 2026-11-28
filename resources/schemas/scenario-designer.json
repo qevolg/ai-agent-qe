@@ -1,0 +1,218 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "feature": {
+            "type": "string",
+            "minLength": 1
+          },
+          "entry_point": {
+            "type": "string",
+            "enum": [
+              "sql",
+              "api",
+              "explorer",
+              "cli",
+              "cross_entry"
+            ]
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "abnormal",
+              "boundary",
+              "state",
+              "permissions",
+              "data",
+              "cross_entry"
+            ]
+          },
+          "preconditions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "services": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$"
+            },
+            "uniqueItems": true
+          },
+          "oracle": {
+            "type": "string",
+            "minLength": 1
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$"
+                },
+                "action": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "expected": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "id",
+                "action",
+                "expected"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1
+          },
+          "cleanup": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "blocked_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "derived_from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "feature",
+          "entry_point",
+          "category",
+          "preconditions",
+          "services",
+          "oracle",
+          "steps",
+          "cleanup",
+          "blocked_reason",
+          "derived_from",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "coverage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "feature": {
+            "type": "string",
+            "minLength": 1
+          },
+          "entry_point": {
+            "type": "string",
+            "enum": [
+              "sql",
+              "api",
+              "explorer",
+              "cli",
+              "cross_entry"
+            ]
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "abnormal",
+              "boundary",
+              "state",
+              "permissions",
+              "data",
+              "cross_entry"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "planned",
+              "not_applicable",
+              "gap"
+            ]
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scenario_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$"
+            },
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "feature",
+          "entry_point",
+          "category",
+          "status",
+          "rationale",
+          "scenario_ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "required": [
+    "summary",
+    "scenarios",
+    "coverage",
+    "limitations"
+  ],
+  "additionalProperties": false
+}

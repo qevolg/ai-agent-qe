@@ -6,6 +6,8 @@ use anyhow::Result;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 
+mod product;
+
 fn text(value: &Value) -> &str {
     value.as_str().unwrap_or("")
 }
@@ -54,6 +56,9 @@ pub fn generate_report(
     execution: &Value,
     verdicts: &Value,
 ) -> Result<Value> {
+    if state["workflow"] == "product" {
+        return product::generate_report(directory, state, artifacts, execution, verdicts);
+    }
     let candidates = array(&artifacts["bug-hunter"]["candidates"]);
     let plans = array(&artifacts["test-designer"]["plans"]);
     let generated_tests = array(&artifacts["test-developer"]["tests"]);

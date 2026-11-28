@@ -71,6 +71,9 @@ fn identities<'a>(items: &'a [Value], key: &str) -> HashSet<&'a str> {
 }
 
 pub fn validate_links(stage: &str, artifact: &Value, artifacts: &Value) -> Result<()> {
+    if crate::agents::stage::PRODUCT_STAGES.contains(&stage) {
+        return crate::guards::product::validate_links(stage, artifact, artifacts);
+    }
     match stage {
         "code-explorer" => unique(items(artifact, "references")?, "id", "reference")?,
         "bug-hunter" => {

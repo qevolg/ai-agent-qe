@@ -387,32 +387,50 @@ fn real_docker_scenario(early_inline: bool) {
         config["baseline"] = json!([]);
     }
     fs::write(&config_file, serde_yaml::to_string(&config).unwrap()).unwrap();
-    let bin = temp.path().join("bin");
-    fs::create_dir(&bin).unwrap();
-    support::executable(
-        &bin.join("codex"),
-        json!({"mode":"codex","flags":fixture_flags}),
-    );
+    // Instantiate a historical workflow explicitly. New production runs use
+    // product scenarios; this test preserves old patch/coverage replay checks.
+    struct LegacyCodex(aaqe::agents::codex::Codex);
+    impl AuditAgent for LegacyCodex {
+        fn coordinate(&self, harness: &mut aaqe::audit::harness::AuditHarness<'_>) -> Result<()> {
+            self.0.coordinate(harness)
+        }
+        fn invoke(
+            &self,
+            stage: &str,
+            workspace: &Path,
+            directory: &Path,
+            inputs: &Value,
+            progress: &dyn Fn(&str),
+        ) -> Result<Value> {
+            self.0.invoke(stage, workspace, directory, inputs, progress)
+        }
+    }
     let runs = temp.path().join(".aaqe");
-    let output = binary()
-        .current_dir(&root)
-        .env("HOME", temp.path())
-        .env("PATH", support::path_with(&bin))
-        .args(["run", "Verify the documented inclusive bounds"])
-        .output()
-        .unwrap();
+    let mut loaded = Config::load(&root, Some(&config_file)).unwrap();
+    loaded.state_dir = runs.clone();
+    loaded.codex_command = support::codex(&fixture_flags);
+    let mut state = run_audit_with(
+        "Verify the documented inclusive bounds",
+        &root,
+        &loaded,
+        &LegacyCodex(aaqe::agents::codex::Codex::new(&loaded)),
+        &|workspace, directory, id, spec, timeout| {
+            Box::new(ComposeEnvironment::new(
+                workspace, directory, id, spec, timeout,
+            ))
+        },
+        &|message| eprintln!("{message}"),
+    )
+    .unwrap();
     let dir = fs::read_dir(&runs).unwrap().next().unwrap().unwrap().path();
-    let mut state = read_json(&dir.join("run.json")).unwrap();
     let _cleanup = Cleanup {
         run: dir.clone(),
         state: state.clone(),
     };
     let report = read_json(&dir.join("report.json")).unwrap();
     assert!(
-        output.status.success(),
-        "{}\n{}\nCoordinator: {}\nCoverage: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
+        state["status"] == "completed",
+        "{state}\nCoordinator: {}\nCoverage: {}",
         fs::read_to_string(dir.join("stages/coordinator/terminal.log")).unwrap_or_default(),
         serde_json::to_string_pretty(&report["execution"]["coverage"]).unwrap()
     );

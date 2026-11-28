@@ -63,6 +63,17 @@ fn save(path: &Path, value: &Value) {
 fn coordinate(args: &[String], directory: &Path, settings: BTreeMap<&str, &str>) {
     assert!(!flag(args, "exec") && !flag(args, "--json") && !flag(args, "--output-schema"));
     assert!(args.last().unwrap().contains("Initial audit status:"));
+    let product = load(&directory.join("input.json"))["state"]["workflow"] == "product";
+    let explorer = if product {
+        "product-explorer"
+    } else {
+        "code-explorer"
+    };
+    let investigation = if product {
+        "scenario-designer"
+    } else {
+        "bug-hunter"
+    };
     save(
         &directory.join("terminal.json"),
         &json!({"stdin":io::stdin().is_terminal(),"stdout":io::stdout().is_terminal(),"stderr":io::stderr().is_terminal()}),
@@ -139,7 +150,7 @@ fn coordinate(args: &[String], directory: &Path, settings: BTreeMap<&str, &str>)
     assert_eq!(
         client.tool(
             "run_stage",
-            json!({"stage":"test-developer","instruction":"too early"})
+            json!({"stage":if product {"product-executor"} else {"test-developer"},"instruction":"too early"})
         )["isError"],
         true
     );
@@ -147,7 +158,7 @@ fn coordinate(args: &[String], directory: &Path, settings: BTreeMap<&str, &str>)
         client.tool("finish", json!({"status":"completed","reason":"too early"}))["isError"],
         true
     );
-    if flag(args, "--early-inline") {
+    if !product && flag(args, "--early-inline") {
         let inspected = client.tool("inspect_environment", json!({"probe":{"kind":"docker"}}));
         assert_eq!(inspected["isError"], false, "{inspected}");
         let prepared=client.tool("prepare_environment",json!({"environment":{
@@ -172,18 +183,32 @@ fn coordinate(args: &[String], directory: &Path, settings: BTreeMap<&str, &str>)
             true
         );
     }
-    let mut stages = vec![
-        "code-explorer",
-        "bug-hunter",
-        "test-designer",
-        "test-developer",
-        "test-validator",
-    ];
-    if flag(args, "--retry-developer") {
+    let mut stages = if product {
+        vec![
+            "product-explorer",
+            "scenario-designer",
+            "product-executor",
+            "issue-reproducer",
+            "result-reviewer",
+        ]
+    } else {
+        vec![
+            "code-explorer",
+            "bug-hunter",
+            "test-designer",
+            "test-developer",
+            "test-validator",
+        ]
+    };
+    if !product && flag(args, "--retry-developer") {
         stages.insert(4, "test-developer");
     }
     if flag(args, "--loop-test") || flag(args, "--cancel-test") {
-        stages = vec!["code-explorer", "code-explorer", "bug-hunter"];
+        if product {
+            stages.insert(1, explorer);
+        } else {
+            stages = vec![explorer, explorer, investigation];
+        }
     }
     let mut failed = false;
     for stage in stages {
@@ -200,12 +225,12 @@ fn coordinate(args: &[String], directory: &Path, settings: BTreeMap<&str, &str>)
         if (flag(args, "--policy-stage")
             || flag(args, "--policy-provider")
             || flag(args, "--policy-message-stage"))
-            && stage == "bug-hunter"
+            && stage == investigation
         {
             thread::sleep(Duration::from_secs(30));
             fs::write(directory.join("continued-after-policy"), "").unwrap();
         }
-        if stage == "code-explorer" && result["isError"] == false {
+        if stage == explorer && result["isError"] == false {
             let status = client.tool("status", json!({}));
             assert_eq!(
                 status["structuredContent"]["artifacts"][stage]["references"]["total"],
@@ -228,7 +253,18 @@ fn coordinate(args: &[String], directory: &Path, settings: BTreeMap<&str, &str>)
         }
     }
     if !failed {
-        let result=client.tool("finish",json!({"status":"completed","reason":"All current candidates were checked independently"}));
+        let (status, reason) = if product {
+            (
+                "blocked",
+                "生命周期测试夹具未提供真实产品服务部署；已保存受阻场景并独立复核，未执行产品操作",
+            )
+        } else {
+            (
+                "completed",
+                "All current candidates were checked independently",
+            )
+        };
+        let result = client.tool("finish", json!({"status":status,"reason":reason}));
         assert_eq!(result["isError"], false, "{result}");
     }
     println!("Audit finished via harness tools; ready for follow-up");
@@ -240,7 +276,7 @@ fn coordinate(args: &[String], directory: &Path, settings: BTreeMap<&str, &str>)
         assert_eq!(
             client.tool(
                 "run_stage",
-                json!({"stage":"code-explorer","instruction":"after audit"})
+                json!({"stage":explorer,"instruction":"after audit"})
             )["isError"],
             true
         );
@@ -279,7 +315,7 @@ pub fn run(args: &[String]) {
     if (flag(args, "--policy-stage")
         || flag(args, "--policy-provider")
         || flag(args, "--policy-message-stage"))
-        && stage == "bug-hunter"
+        && matches!(stage, "bug-hunter" | "scenario-designer")
     {
         save(
             Path::new(argument(args, "--output-last-message")),
@@ -314,6 +350,34 @@ pub fn run(args: &[String]) {
         thread::sleep(Duration::from_secs(60));
     }
     let mut output = match stage {
+        "product-explorer" => {
+            json!({
+                "summary":"检查 Rust 函数及真实服务部署前提", "scope":["app.rs"],
+                "references":[{"id":"source-1","path":"app.rs","line":1,"claim":"Implementation clamps only the upper bound"}],
+                "uncertainties":["生命周期测试仓库没有真实产品服务的部署定义"],
+                "entry_points":[{"id":"cli-bounds","kind":"cli","description":"调用实际产品的边界值检查入口","applicable":true,"reason":"待部署真实产品后验证"}],
+                "services":[{"id":"bounded-product","name":"Bounded product","source":"docker","endpoint":null,"compose_service":"bounded-product","version":null,"check":["bounded-product-client","version"]}],
+                "environment":{"compose_files":[],"services":["runner"],"runner_service":"runner","runner_workdir":"/workspace","external_containers":[],"readiness_timeout":90,
+                    "compose":{"services":{"runner":{"image":super::project::image(),"command":["sleep","infinity"]}}},"readiness":[],"setup":[]}
+            })
+        }
+        "scenario-designer" => {
+            json!({
+                "summary":"先保存下边界场景及服务部署阻碍",
+                "scenarios":[{"id":"negative-input","title":"负数输入限制为零","feature":"inclusive bounds","entry_point":"cli","category":"boundary","preconditions":["部署真实 bounded-product 服务及其客户端"],"services":["bounded-product"],"oracle":"输入 -1 应返回 0",
+                    "steps":[{"id":"read-negative","action":"通过真实产品 CLI 传入 -1","expected":"实际输出 0"}],"cleanup":[],"blocked_reason":"生命周期测试夹具未提供真实产品服务部署；未执行产品操作","derived_from":null,"reason":null}],
+                "coverage":[{"feature":"inclusive bounds","entry_point":"cli","category":"boundary","status":"planned","rationale":"已记录场景，等待真实服务部署","scenario_ids":["negative-input"]}],"limitations":["此测试检查协调器生命周期，不伪造产品执行证据"]
+            })
+        }
+        "product-executor" => {
+            json!({"summary":"缺少真实服务部署，保留受阻场景","operations":[],"observations":["场景已保存；真实服务尚未提供"],"limitations":["未执行产品操作"]})
+        }
+        "issue-reproducer" => {
+            json!({"summary":"没有产品操作证据可用于缺陷复现","operations":[],"observations":[],"limitations":["真实服务部署缺失"],"issues":[],"followups":[]})
+        }
+        "result-reviewer" => {
+            json!({"summary":"独立确认场景受真实服务部署阻碍","scenario_results":[{"scenario_id":"negative-input","status":"blocked","rationale":"缺少真实产品服务，未执行场景，不能判断功能是否正确","evidence":[],"assessment":{"executed":false,"expectation_met":false,"infrastructure_failure":true,"no_mocks":true,"real_services_verified":false,"entry_point_verified":false}}],"issue_results":[],"limitations":["没有产品执行或缺陷结论"]})
+        }
         "code-explorer" => {
             json!({"summary":"Rust scope examined","scope":["app.rs"],"references":[{"id":"source-1","path":"app.rs","line":1,"claim":"Implementation clamps only the upper bound; README specifies zero to ten"}],"uncertainties":[],"real_services":[],"environment":{"compose_files":["compose.yaml"],"services":["runner"],"runner_service":"runner","runner_workdir":"/workspace","external_containers":[],"readiness_timeout":90,"readiness":[["rustc","--edition=2024","/workspace/run_tests.rs","-o","/aaqe-results/project-runner"]]},"baseline":[["/aaqe-results/project-runner","test","tests/baseline.rs","{result_dir}/baseline.xml"]]})
         }

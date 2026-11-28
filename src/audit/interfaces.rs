@@ -4,6 +4,12 @@ use serde_json::Value;
 use std::path::Path;
 
 pub trait AuditAgent {
+    /// Existing embedded audit agents keep their legacy contract; Codex uses
+    /// documented product scenarios for new runs.
+    fn product_workflow(&self) -> bool {
+        false
+    }
+
     fn coordinate(&self, harness: &mut crate::audit::harness::AuditHarness<'_>) -> Result<()>;
 
     fn invoke(
@@ -17,6 +23,10 @@ pub trait AuditAgent {
 }
 
 impl AuditAgent for Codex {
+    fn product_workflow(&self) -> bool {
+        true
+    }
+
     fn coordinate(&self, harness: &mut crate::audit::harness::AuditHarness<'_>) -> Result<()> {
         Codex::coordinate(self, harness)
     }
