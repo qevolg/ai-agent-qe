@@ -1,5 +1,4 @@
 use super::AuditHarness;
-use crate::agents::stage::STAGES;
 use serde_json::{Value, json};
 
 pub(crate) fn artifact_summary(value: &Value) -> Value {
@@ -7,7 +6,22 @@ pub(crate) fn artifact_summary(value: &Value) -> Value {
     if value["real_services"].is_array() {
         view["real_services"] = value["real_services"].clone();
     }
-    for key in ["references", "candidates", "plans", "tests", "verdicts"] {
+    for key in [
+        "references",
+        "candidates",
+        "plans",
+        "tests",
+        "verdicts",
+        "scenarios",
+        "operations",
+        "issues",
+        "scenario_results",
+        "issue_results",
+        "followups",
+        "coverage",
+        "services",
+        "entry_points",
+    ] {
         if let Some(items) = value[key].as_array() {
             let preview: Vec<_> = items
                 .iter()
@@ -25,6 +39,15 @@ pub(crate) fn artifact_summary(value: &Value) -> Value {
                         "blocked_reason",
                         "execution_blocked_reason",
                         "real_services",
+                        "scenario_id",
+                        "step_id",
+                        "issue_id",
+                        "purpose",
+                        "reason",
+                        "source",
+                        "endpoint",
+                        "kind",
+                        "applicable",
                     ] {
                         if let Some(value) = item.get(field) {
                             entry[field] = value.clone();
@@ -42,6 +65,10 @@ pub(crate) fn artifact_summary(value: &Value) -> Value {
 
 pub(crate) fn execution_summary(value: &Value) -> Value {
     let mut view = json!({"coverage":value["coverage"]});
+    if let Some(operations) = value["operations"].as_array() {
+        view["operations"] = json!(operations.iter().rev().take(20).collect::<Vec<_>>());
+        view["operation_count"] = json!(operations.len());
+    }
     for key in ["baseline", "tests"] {
         let items = value[key].as_array().cloned().unwrap_or_default();
         let preview: Vec<_> = items.iter().take(20).map(|item| {
@@ -139,6 +166,8 @@ impl AuditHarness<'_> {
             "finished_at",
             "error",
             "environment_ready",
+            "workflow",
+            "document_revision",
         ] {
             state[key] = self.state[key].clone();
         }
@@ -164,12 +193,16 @@ impl AuditHarness<'_> {
     }
 
     pub(super) fn build_stage_inputs(&self, stage: &str, attempt: u64, instruction: &str) -> Value {
-        let index = STAGES.iter().position(|role| *role == stage).unwrap();
+        let stages = self.stages();
+        let index = stages.iter().position(|role| *role == stage).unwrap();
         let mut artifacts = json!({});
-        for role in &STAGES[..index] {
+        for role in &stages[..index] {
             if let Some(artifact) = self.artifacts.get(*role) {
                 artifacts[*role] = artifact.clone();
             }
+        }
+        if self.product_workflow() {
+            artifacts = self.artifacts.clone();
         }
         if stage == "test-developer"
             && let Some(previous) = self.artifacts.get(stage)

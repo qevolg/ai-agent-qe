@@ -1,0 +1,136 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scenario_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "scenario_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "failed",
+              "blocked",
+              "not_executed",
+              "flaky"
+            ]
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "assessment": {
+            "type": "object",
+            "properties": {
+              "executed": {
+                "type": "boolean"
+              },
+              "expectation_met": {
+                "type": "boolean"
+              },
+              "infrastructure_failure": {
+                "type": "boolean"
+              },
+              "no_mocks": {
+                "type": "boolean"
+              },
+              "real_services_verified": {
+                "type": "boolean"
+              },
+              "entry_point_verified": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "executed",
+              "expectation_met",
+              "infrastructure_failure",
+              "no_mocks",
+              "real_services_verified",
+              "entry_point_verified"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "scenario_id",
+          "status",
+          "rationale",
+          "evidence",
+          "assessment"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "issue_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "issue_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "confirmed",
+              "not_reproduced",
+              "blocked",
+              "invalid_test",
+              "flaky"
+            ]
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "required": [
+          "issue_id",
+          "status",
+          "rationale",
+          "evidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "required": [
+    "summary",
+    "scenario_results",
+    "issue_results",
+    "limitations"
+  ],
+  "additionalProperties": false
+}

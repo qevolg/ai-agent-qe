@@ -63,9 +63,40 @@ pub fn tools() -> Value {
     ])
 }
 
+fn workflow_tools(product: bool) -> Value {
+    let mut definitions = tools();
+    if product {
+        for definition in definitions.as_array_mut().unwrap() {
+            if definition["inputSchema"]["properties"]
+                .get("stage")
+                .is_some()
+            {
+                definition["inputSchema"]["properties"]["stage"]["enum"] =
+                    json!(crate::agents::stage::PRODUCT_STAGES);
+            }
+            if definition["name"] == "run_stage" {
+                definition["description"] = json!(
+                    "Run one of the five product stages. Document scenarios before proposing operations. Executor/Reproducer argv are executed serially in the Docker runner after the artifact returns."
+                );
+            }
+            if definition["name"] == "finish" {
+                definition["description"] = json!(
+                    "Finish a documented product task. Completed requires all five current stages and independent scenario/issue review. No test patch or code coverage is required. Missing evidence remains blocked."
+                );
+            }
+            if definition["name"] == "execute_tests" {
+                definition["description"] = json!(
+                    "Replay saved product operations; test_ids selects documented scenario IDs. This clears independent review and anomaly conclusions."
+                );
+            }
+        }
+    }
+    definitions
+}
+
 fn call(harness: &mut AuditHarness<'_>, params: &Value) -> Result<Value> {
     let name = params["name"].as_str().context("Missing tool name")?;
-    let definition = tools()
+    let definition = workflow_tools(harness.product_workflow())
         .as_array()
         .unwrap()
         .iter()
@@ -219,7 +250,7 @@ pub fn serve(directory: &Path) -> Result<()> {
                 json!({"result":{"protocolVersion":version,"capabilities":{"tools":{}},"serverInfo":{"name":"aaqe-harness","version":env!("CARGO_PKG_VERSION")}}})
             }
             "ping" => json!({"result":{}}),
-            "tools/list" => json!({"result":{"tools":tools()}}),
+            "tools/list" => json!({"result":{"tools":workflow_tools(harness.product_workflow())}}),
             "tools/call" => {
                 let result = (|| {
                     operation_lock = Some(crate::state::RunLock::acquire(directory)?);

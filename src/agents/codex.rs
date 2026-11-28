@@ -36,7 +36,11 @@ impl Codex {
                 .ok_or_else(|| anyhow::anyhow!("Missing worktree"))?,
         );
         write_json(&directory.join("input.json"), &inputs)?;
-        let role = include_str!("../../resources/agents/coordinator.md");
+        let role = if inputs["state"]["workflow"] == "product" {
+            include_str!("../../resources/agents/product-coordinator.md")
+        } else {
+            include_str!("../../resources/agents/coordinator.md")
+        };
         fs::write(directory.join("SKILL.md"), role)?;
         let prompt = format!(
             "{role}\n\nInitial audit status:\n{}",
@@ -144,6 +148,23 @@ impl Codex {
         context.as_object_mut().unwrap().remove("artifacts");
         context["input_file"] = json!(directory.join("input.json"));
         let required: &[&str] = match stage {
+            "scenario-designer" => &["/artifacts/product-explorer"],
+            "product-executor" => &[
+                "/artifacts/product-explorer/services",
+                "/artifacts/scenario-designer",
+                "/execution",
+            ],
+            "issue-reproducer" => &[
+                "/artifacts/scenario-designer",
+                "/artifacts/product-executor",
+                "/execution",
+            ],
+            "result-reviewer" => &[
+                "/artifacts/product-explorer",
+                "/artifacts/scenario-designer",
+                "/artifacts/issue-reproducer",
+                "/execution",
+            ],
             "bug-hunter" => &[
                 "/artifacts/code-explorer/scope",
                 "/artifacts/code-explorer/references",

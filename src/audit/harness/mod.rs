@@ -22,6 +22,7 @@ use std::{
 
 mod environment;
 mod inputs;
+mod product;
 pub(crate) use inputs::{execution_summary, tool_view};
 
 pub struct AuditHarness<'a> {
@@ -78,7 +79,8 @@ impl<'a> AuditHarness<'a> {
     }
 
     pub fn status(&self) -> Value {
-        let availability: Vec<Value> = STAGES
+        let availability: Vec<Value> = self
+            .stages()
             .iter()
             .map(|stage| match self.stage_gate(stage, "status") {
                 Ok(_) => json!({"stage":stage,"available":true}),
@@ -92,7 +94,7 @@ impl<'a> AuditHarness<'a> {
             .filter(|v| v["available"] == true)
             .map(|v| v["stage"].clone())
             .collect();
-        json!({"state":self.state,"workspace":self.state["workspace"],"artifacts":self.artifacts,"execution":self.execution,"verdicts":self.verdicts,"allowed_stages":allowed,"stages":STAGES,"stage_availability":availability,"recovery":self.recovery(),"budgets":{"stage_calls":self.config.max_stage_calls,"attempts_per_stage":self.config.max_stage_attempts,"timeout":self.config.run_timeout}})
+        json!({"state":self.state,"workspace":self.state["workspace"],"artifacts":self.artifacts,"execution":self.execution,"verdicts":self.verdicts,"allowed_stages":allowed,"stages":self.stages(),"stage_availability":availability,"recovery":self.recovery(),"budgets":{"stage_calls":self.config.max_stage_calls,"attempts_per_stage":self.config.max_stage_attempts,"timeout":self.config.run_timeout}})
     }
 
     fn root(&self) -> Result<PathBuf> {
@@ -127,6 +129,18 @@ impl<'a> AuditHarness<'a> {
     }
 
     fn invalidate(&mut self, index: usize) -> Result<()> {
+        if self.product_workflow() {
+            self.execution = json!({"baseline":[],"tests":[],"operations":[]});
+            self.artifacts
+                .as_object_mut()
+                .unwrap()
+                .remove("issue-reproducer");
+            let path = self.directory.join("artifacts/issue-reproducer.json");
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
+            return self.clear_product_review();
+        }
         for role in &STAGES[index + 1..] {
             self.artifacts.as_object_mut().unwrap().remove(*role);
             let file = self
@@ -175,17 +189,18 @@ impl<'a> AuditHarness<'a> {
             !instruction.trim().is_empty(),
             "A dispatch instruction is required"
         );
-        let index = STAGES
+        let stages = self.stages();
+        let index = stages
             .iter()
             .position(|role| *role == stage)
             .context("Unknown stage")?;
-        for prerequisite in &STAGES[..if stage == "test-validator" { 3 } else { index }] {
+        for prerequisite in &stages[..if stage == "test-validator" { 3 } else { index }] {
             ensure!(
                 self.artifacts.get(*prerequisite).is_some(),
                 "Missing prerequisite: {prerequisite}"
             );
         }
-        if index >= 2 {
+        if index >= 2 && !self.product_workflow() {
             ensure!(
                 !self.artifacts["bug-hunter"]["candidates"]
                     .as_array()
@@ -300,6 +315,9 @@ impl<'a> AuditHarness<'a> {
         directory: &Path,
         inputs: &Value,
     ) -> Result<Value> {
+        if self.product_workflow() {
+            return self.accept_product(stage, index, directory, inputs);
+        }
         let root = self.root()?;
         let output = self
             .agent
@@ -540,6 +558,9 @@ impl<'a> AuditHarness<'a> {
             ["completed", "blocked"].contains(&status),
             "Finish status must be completed or blocked"
         );
+        if self.product_workflow() {
+            return self.finish_product(status, reason);
+        }
         if status == "completed" {
             ensure!(
                 !self.directory.join("patch-transition.json").exists()
@@ -627,6 +648,12 @@ pub fn audit(
     };
     harness.state["environment_retained"] = json!(false);
     harness.state["audit_finalized"] = json!(false);
+    if agent.product_workflow() {
+        harness.state["workflow"] = json!("product");
+        harness.state["document_revision"] = json!(0);
+        harness.state["document_changes"] = json!([]);
+        harness.execution["operations"] = json!([]);
+    }
     harness.save()?;
     let outcome = (|| -> Result<()> {
         harness.config = resolve_target(caller, config)?;

@@ -62,6 +62,7 @@ fn policy_denial_stops_stage_and_coordinator_without_retrying() {
             "policy refusal waited for timeout"
         );
         assert_eq!(state["status"], "blocked", "{state}");
+        assert_eq!(state["workflow"], "product");
         assert!(
             state["error"].as_str().unwrap().contains("安全策略拒绝"),
             "{state}"
@@ -73,10 +74,10 @@ fn policy_denial_stops_stage_and_coordinator_without_retrying() {
                 .exists()
         );
         if !flag.ends_with("coordinator") {
-            assert!(!directory.join("artifacts/bug-hunter.json").exists());
+            assert!(!directory.join("artifacts/scenario-designer.json").exists());
             assert!(
                 !directory
-                    .join("stages/bug-hunter/continued-after-policy")
+                    .join("stages/scenario-designer/continued-after-policy")
                     .exists()
             );
             assert_eq!(state["stages"].as_array().unwrap().len(), 3);
@@ -99,8 +100,29 @@ fn native_coordinator_retains_one_interactive_tui_and_fresh_background_stages() 
     let _cleanup = Cleanup(config.state_dir.clone());
     let state = aaqe::audit::workflow::run_audit("audit", temp.path(), &config, &|_| {}).unwrap();
     let directory = config.state_dir.join(state["id"].as_str().unwrap());
-    assert_eq!(state["status"], "completed", "{state}");
+    assert_eq!(state["status"], "blocked", "{state}");
+    assert_eq!(state["workflow"], "product");
+    assert!(
+        state["error"]
+            .as_str()
+            .unwrap()
+            .contains("真实产品服务部署")
+    );
+    assert!(directory.join("steps.md").is_file());
     assert!(directory.join("report.md").is_file());
+    let report = read_json(&directory.join("report.json")).unwrap();
+    assert_eq!(report["schema_version"], "2.0");
+    assert_eq!(report["scenario_results"][0]["status"], "blocked");
+    assert_eq!(
+        report["scenario_results"][0]["assessment"]["executed"],
+        false
+    );
+    assert!(
+        report["execution"]["operations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     let coordinator = directory.join("stages/coordinator");
     let metadata = read_json(&coordinator.join("tmux.json")).unwrap();
     let session = metadata["session"].as_str().unwrap();
@@ -137,7 +159,14 @@ fn native_coordinator_retains_one_interactive_tui_and_fresh_background_stages() 
         fs::read_to_string(coordinator.join("follow-up.txt")).unwrap(),
         "follow up after report\n"
     );
-    for path in ["code-explorer", "code-explorer/attempts/0002", "bug-hunter"] {
+    for path in [
+        "product-explorer",
+        "product-explorer/attempts/0002",
+        "scenario-designer",
+        "product-executor",
+        "issue-reproducer",
+        "result-reviewer",
+    ] {
         let stage = directory.join("stages").join(path);
         assert!(stage.join("input.json").is_file());
         assert!(stage.join("prompt.md").is_file());
@@ -154,7 +183,7 @@ fn native_coordinator_retains_one_interactive_tui_and_fresh_background_stages() 
             .status
             .success()
     );
-    assert_eq!(state["stages"].as_array().unwrap().len(), 3);
+    assert_eq!(state["stages"].as_array().unwrap().len(), 6);
     let events = fs::read_to_string(directory.join("stages/coordinator/tools.jsonl")).unwrap();
     assert!(events.contains("Missing prerequisite"));
     assert!(events.contains("finish"));
@@ -216,6 +245,22 @@ fn mcp_protocol_errors_do_not_pollute_stdout() {
     assert_eq!(replies.len(), 4);
     assert_eq!(replies[0]["result"]["protocolVersion"], "2024-11-05");
     assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 6);
+    let dispatch = replies[1]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "run_stage")
+        .unwrap();
+    assert_eq!(
+        dispatch["inputSchema"]["properties"]["stage"]["enum"],
+        json!([
+            "product-explorer",
+            "scenario-designer",
+            "product-executor",
+            "issue-reproducer",
+            "result-reviewer"
+        ])
+    );
     assert_eq!(replies[2]["result"]["isError"], true);
     assert_eq!(replies[3]["error"]["code"], -32601);
 }
@@ -283,7 +328,7 @@ fn cancelling_or_timing_out_the_coordinator_stops_separate_stage_processes() {
                 && let Some(entry) = entries.flatten().next()
                 && entry
                     .path()
-                    .join("stages/code-explorer/worker.pid")
+                    .join("stages/product-explorer/worker.pid")
                     .exists()
             {
                 break entry.path();
@@ -330,6 +375,7 @@ fn cancelling_or_timing_out_the_coordinator_stops_separate_stage_processes() {
         };
         assert_eq!(exit.code(), Some(1));
         let state = read_json(&run.join("run.json")).unwrap();
+        assert_eq!(state["workflow"], "product");
         assert_eq!(
             state["status"],
             if cancellation == "interrupt" || cancellation == "kill-mcp" {
@@ -339,7 +385,7 @@ fn cancelling_or_timing_out_the_coordinator_stops_separate_stage_processes() {
             },
             "{state}"
         );
-        let stage = run.join("stages/code-explorer");
+        let stage = run.join("stages/product-explorer");
         let pid = fs::read_to_string(stage.join("worker.pid")).unwrap();
         if let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid.trim())) {
             assert_eq!(

@@ -1,16 +1,22 @@
-# Optional: save as aaqe.yaml in the audited project, or use --config PATH.
-# No configuration file is needed for a normal audit.
+# Optional: save as aaqe.yaml in the product repository, or use --config PATH.
+# No configuration file is needed for a normal product verification task.
+# Each `aaqe run` saves steps.md, execution evidence and reports in ~/.aaqe/RUN_ID/.
+# Product tasks do not require a coverage threshold or a generated test MR.
 
 codex:
   model: gpt-6.1-sol
 
 # Git remote and its default branch are discovered automatically.
-# Override only when auditing a different target.
+# Override only when testing a different target.
 # git:
 #   remote: upstream
 #   branch: develop
 
 # Leave empty to discover the product environment from repository evidence.
+# Explicit external addresses must be stated in the task prompt, per service.
+# Services without a prompt-specified address run as real Docker instances.
+# Mixed external/Docker deployments still execute operations in a Docker runner.
+# An unavailable external address blocks verification; no silent local fallback.
 environment: {}
 # environment:
 #   compose_files: [tests/compose.yaml]
@@ -23,6 +29,9 @@ environment: {}
 #   env_file: /private/product.env
 
 references: []
+# Legacy test-generation/replay options remain available for historical audits.
+# The product scenario workflow documents all applicable SQL/API/Explorer/CLI
+# entry points and uses an actual browser for Explorer page scenarios.
 baseline: []
 test_paths:
   - tests/**
@@ -31,7 +40,8 @@ test_paths:
   - "**/test/**"
   - .aaqe/tests/**
 
-# Uses authenticated glab on the host; project defaults to the Git remote.
+# Historical test-patch publication uses authenticated glab on the host;
+# project defaults to the Git remote. New product tasks deliver reports.
 # Override when an SSH alias hides the GitLab host.
 # publication:
 #   project: https://gitlab.example/group/product
