@@ -42,6 +42,16 @@ pub trait TestRuntime {
 
     fn execute_test(&self, command: &[String], test_id: &str, timeout: u64) -> Result<Value>;
 
+    fn execute_service_check(
+        &self,
+        _command: &[String],
+        _service: &str,
+        _test_id: &str,
+        _timeout: u64,
+    ) -> Result<Value> {
+        anyhow::bail!("Real-service checks require Docker container identity evidence")
+    }
+
     fn logs(&self) -> Result<()>;
 }
 
@@ -56,6 +66,16 @@ impl TestRuntime for ComposeEnvironment {
 
     fn execute_test(&self, command: &[String], test_id: &str, timeout: u64) -> Result<Value> {
         ComposeEnvironment::execute_test(self, command, test_id, timeout)
+    }
+
+    fn execute_service_check(
+        &self,
+        command: &[String],
+        service: &str,
+        test_id: &str,
+        timeout: u64,
+    ) -> Result<Value> {
+        ComposeEnvironment::execute_service_check(self, command, service, test_id, timeout)
     }
 
     fn logs(&self) -> Result<()> {

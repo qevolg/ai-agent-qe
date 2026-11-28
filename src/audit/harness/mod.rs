@@ -574,8 +574,20 @@ impl<'a> AuditHarness<'a> {
                 .as_str()
                 .is_some_and(|patch| !patch.trim().is_empty())
             && !crate::guards::coverage::approved(&self.execution, &self.artifacts);
-        let status = if coverage_blocked { "blocked" } else { status };
-        let reason = if coverage_blocked {
+        let services_blocked = status == "completed"
+            && !crate::guards::real_services::approved(
+                &self.execution,
+                &self.artifacts,
+                &self.verdicts,
+            );
+        let status = if services_blocked || coverage_blocked {
+            "blocked"
+        } else {
+            status
+        };
+        let reason = if services_blocked {
+            "Tests require current real-service execution evidence and independent no-mock verification"
+        } else if coverage_blocked {
             "Target module line coverage must reach 80% and pass independent validation"
         } else {
             reason

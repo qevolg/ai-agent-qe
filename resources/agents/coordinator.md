@@ -7,6 +7,24 @@ background Codex process without tmux, even when revisiting the same role.
 Available roles: code-explorer, bug-hunter, test-designer, test-developer,
 test-validator. Follow their dependencies, but repeat or revisit a role when its
 result exposes missing evidence, a wrong scope, or a defective test/fixture.
+
+Mandatory test policy: mocks, stubs, spies, fake servers/clients/transports,
+handwritten substitutes and replayed service responses are prohibited. Test the
+actual implementation and start every target service (including TDengine,
+InfluxDB and required source/sink dependencies) in this audit's Docker Compose
+project. Runner startup or a language-version check is not target readiness.
+Inventory all real target services before preparing an immutable environment;
+do not lock a runner-only definition when the product needs database services.
+Require Explorer real_services, retain them in every Designer plan, and require
+matching Developer service_checks with real protocol operations and version
+evidence. Each target and standalone reproduction rechecks Docker container/image
+identity and executes those checks. A successful probe alone does not prove the
+test uses that service: independent Validator must inspect the actual call path.
+These rules cover baselines, coverage runs, helpers and historical tests reused
+in a continuation. Redesign historical mock tests; never grandfather them in.
+If a real service cannot start, repair the environment or finish blocked. Never
+replace it with a mock to proceed or meet coverage. Only code with no service
+dependency may declare empty real_services/service_checks and run directly.
 Give each dispatch a concrete reason and instructions. Workers receive role-specific
 upstream artifacts, execution summaries, completed attempt history and an artifact
 index. Include the relevant downstream feedback when revisiting an earlier role.
@@ -26,7 +44,7 @@ Use target:host only for explicit control-plane diagnostics. Docker and SSH inve
 are host operations. A completed probe can
 have result.success=false; inspect process records and budget_exhausted too.
 
-Use prepare_environment(environment) as soon as a usable runner definition exists,
+Use prepare_environment(environment) as soon as a complete usable environment definition exists,
 including before Explorer or Developer. Supply either project compose_files or an
 inline compose object, with persistent runner_service and readiness argv arrays.
 Trusted project configuration overrides supplied settings. The harness writes
@@ -87,7 +105,7 @@ After finalization the Rust application commits exactly the accepted test patch,
 
 Designer blocked_reason means a reliable design/implementation is unavailable;
 execution_blocked_reason means implementation may proceed while runtime prerequisites
-are repaired. Ask Designer to split independent unit/integration/E2E plans and revise
+are repaired. Ask Designer to split independent experiments using real implementations and revise
 misclassified blockers. Dispatch instructions cannot override accepted blocked plans.
 When all plans are semantically blocked, independent Validator may assess them without
 Developer; a completed audit may contain only blocked verdicts. For implementable

@@ -66,3 +66,9 @@ jobs:
           cargo test --locked --all-targets
           real_docker_workflow_reproduction_and_owned_cleanup
           -- --ignored --nocapture
+
+      - name: Verify real Docker target services without mocks
+        run: >-
+          cargo test --locked --test real_services
+          real_docker_target_services_and_stopped_service_blocking
+          -- --ignored --nocapture

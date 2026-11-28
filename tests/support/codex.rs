@@ -315,13 +315,13 @@ pub fn run(args: &[String]) {
     }
     let mut output = match stage {
         "code-explorer" => {
-            json!({"summary":"Rust scope examined","scope":["app.rs"],"references":[{"id":"source-1","path":"app.rs","line":1,"claim":"Implementation clamps only the upper bound; README specifies zero to ten"}],"uncertainties":[],"environment":{"compose_files":["compose.yaml"],"services":["runner"],"runner_service":"runner","runner_workdir":"/workspace","external_containers":[],"readiness_timeout":90,"readiness":[["rustc","--edition=2024","/workspace/run_tests.rs","-o","/aaqe-results/project-runner"]]},"baseline":[["/aaqe-results/project-runner","test","tests/baseline.rs","{result_dir}/baseline.xml"]]})
+            json!({"summary":"Rust scope examined","scope":["app.rs"],"references":[{"id":"source-1","path":"app.rs","line":1,"claim":"Implementation clamps only the upper bound; README specifies zero to ten"}],"uncertainties":[],"real_services":[],"environment":{"compose_files":["compose.yaml"],"services":["runner"],"runner_service":"runner","runner_workdir":"/workspace","external_containers":[],"readiness_timeout":90,"readiness":[["rustc","--edition=2024","/workspace/run_tests.rs","-o","/aaqe-results/project-runner"]]},"baseline":[["/aaqe-results/project-runner","test","tests/baseline.rs","{result_dir}/baseline.xml"]]})
         }
         "bug-hunter" => {
             json!({"summary":"Negative input bypasses lower bound","candidates":[{"id":"lower-bound","title":"Negative inputs remain negative","expected":"zero","observed":"negative value","trigger":"bounded_value(-1)","evidence_ids":["source-1"],"confidence":"high"}],"excluded_areas":[]})
         }
         "test-designer" => {
-            json!({"summary":"Check lower bound","plans":[{"candidate_id":"lower-bound","test_id":"negative-input","expectation":"zero","oracle":"README contract: inclusive zero to ten","steps":["call bounded_value(-1)","assert equal to zero"],"reproduction":["run saved test"],"blocked_reason":null}]})
+            json!({"summary":"Check lower bound","plans":[{"candidate_id":"lower-bound","test_id":"negative-input","expectation":"zero","oracle":"README contract: inclusive zero to ten","steps":["call bounded_value(-1)","assert equal to zero"],"reproduction":["run saved test"],"blocked_reason":null,"real_services":[]}]})
         }
         "test-developer" => {
             let mut source = String::from(
@@ -342,10 +342,10 @@ pub fn run(args: &[String]) {
                     .map(|line| format!("+{line}\n"))
                     .collect::<String>()
             );
-            json!({"summary":"Add lower-bound regression","coverage":{"command":["/aaqe-results/project-runner","coverage","{result_dir}"],"report":"coverage.json","files":["app.rs"]},"patch":patch,"tests":[{"id":"negative-input","candidate_id":"lower-bound","command":["/aaqe-results/project-runner","test","tests/regression.rs","{result_dir}/junit.xml"],"report":"junit.xml","expected_names":["test_negative"],"reproduction_commands":[]}],"limitations":[]})
+            json!({"summary":"Add lower-bound regression","coverage":{"command":["/aaqe-results/project-runner","coverage","{result_dir}"],"report":"coverage.json","files":["app.rs"]},"patch":patch,"tests":[{"id":"negative-input","candidate_id":"lower-bound","command":["/aaqe-results/project-runner","test","tests/regression.rs","{result_dir}/junit.xml"],"report":"junit.xml","expected_names":["test_negative"],"reproduction_commands":[],"service_checks":[]}],"limitations":[]})
         }
         "test-validator" => {
-            json!({"summary":"Assertion demonstrates lower-bound defect","coverage_assessment":{"scope_valid":true,"measurement_valid":true,"meaningful_assertions":true,"rationale":"Reviewed native evidence and complete production scope"},"verdicts":[{"candidate_id":"lower-bound","test_ids":["negative-input"],"status":"confirmed","assessment":{"executed":true,"assertion_failed":true,"infrastructure_failure":false},"rationale":"Baseline passes; regression observes -1 instead of zero","evidence":[Path::new(inputs["execution"]["tests"][0]["directory"].as_str().unwrap()).join("execution.json")]}]})
+            json!({"summary":"Assertion demonstrates lower-bound defect","coverage_assessment":{"scope_valid":true,"measurement_valid":true,"meaningful_assertions":true,"rationale":"Reviewed native evidence and complete production scope"},"verdicts":[{"candidate_id":"lower-bound","test_ids":["negative-input"],"status":"confirmed","assessment":{"executed":true,"assertion_failed":true,"infrastructure_failure":false,"no_mocks":true,"real_services_verified":true},"rationale":"Baseline passes; regression observes -1 instead of zero","evidence":[Path::new(inputs["execution"]["tests"][0]["directory"].as_str().unwrap()).join("execution.json")]}]})
         }
         _ => panic!("unknown stage {stage}"),
     };

@@ -308,6 +308,12 @@ impl PatchGate {
                 staged.stderr.trim()
             );
             for path in &paths {
+                let updated = staged_command(&["show", &format!(":{path}")], None);
+                ensure!(
+                    updated.returncode == 0,
+                    "Cannot inspect patched test: {path}"
+                );
+                super::real_services::reject_mocks(path, &updated.stdout)?;
                 if self.test_only(path) {
                     continue;
                 }
@@ -317,7 +323,6 @@ impl PatchGate {
                         && existing.is_file(),
                     "Patch modifies production code: {path}"
                 );
-                let updated = staged_command(&["show", &format!(":{path}")], None);
                 ensure!(
                     updated.returncode == 0
                         && rust_production(&fs::read(&existing)?)?
@@ -350,11 +355,12 @@ impl PatchGate {
         );
         let mut changed = Vec::new();
         for path in untracked.stdout.split('\0').filter(|path| !path.is_empty()) {
-            safe_path(&self.root, path)?;
+            let destination = safe_path(&self.root, path)?;
             ensure!(
                 self.test_only(path),
                 "New production file appeared during execution: {path}"
             );
+            super::real_services::reject_mocks(path, &fs::read_to_string(destination)?)?;
             changed.push(path.to_string());
         }
         let tracked = self.command(&["diff", "--name-only", "HEAD", "-z"], None);
@@ -362,6 +368,7 @@ impl PatchGate {
         for path in tracked.stdout.split('\0').filter(|path| !path.is_empty()) {
             let destination = safe_path(&self.root, path)?;
             ensure!(destination.is_file(), "Tracked file was removed: {path}");
+            super::real_services::reject_mocks(path, &fs::read_to_string(&destination)?)?;
             if !self.test_only(path) {
                 let previous = self.command(&["show", &format!("HEAD:{path}")], None);
                 ensure!(

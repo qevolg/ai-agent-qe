@@ -48,6 +48,12 @@
               "string",
               "null"
             ]
+          },
+          "real_services": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "uniqueItems": true,
+            "description": "All real services required by the tested production path. Empty only for code with no service dependency."
           }
         },
         "required": [
@@ -57,7 +63,8 @@
           "oracle",
           "steps",
           "reproduction",
-          "blocked_reason"
+          "blocked_reason",
+          "real_services"
         ],
         "additionalProperties": false
       }

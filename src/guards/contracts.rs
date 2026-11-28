@@ -92,6 +92,13 @@ pub fn validate_links(stage: &str, artifact: &Value, artifacts: &Value) -> Resul
             if identities(plans, "candidate_id") != candidates {
                 bail!("Test plans must cover every candidate");
             }
+            let required = items(&artifacts["code-explorer"], "real_services")?;
+            for plan in plans {
+                let services = items(plan, "real_services")?;
+                if required.iter().any(|service| !services.contains(service)) {
+                    bail!("Test plans must retain all audited Docker target services");
+                }
+            }
         }
         "test-developer" => {
             let tests = items(artifact, "tests")?;
@@ -110,6 +117,15 @@ pub fn validate_links(stage: &str, artifact: &Value, artifacts: &Value) -> Resul
                     .context("Unknown test plan")?;
                 if plan["candidate_id"] != test["candidate_id"] {
                     bail!("Generated test refers to the wrong candidate");
+                }
+                let required: HashSet<_> = items(plan, "real_services")?
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect();
+                let checks = items(test, "service_checks")?;
+                let supplied = identities(checks, "service");
+                if required != supplied || checks.len() != supplied.len() {
+                    bail!("Test service_checks must match every planned real service exactly once");
                 }
             }
         }
@@ -165,7 +181,7 @@ mod tests {
                 .get("uniqueItems")
                 .is_none()
         );
-        let mut artifact = json!({"summary":"regression", "patch":"diff", "tests":[{"id":"test-1","candidate_id":"bug-1","command":["test"],"report":"junit.xml","expected_names":["same","same"],"reproduction_commands":[]}],"limitations":[]});
+        let mut artifact = json!({"summary":"regression", "patch":"diff", "tests":[{"id":"test-1","candidate_id":"bug-1","command":["test"],"report":"junit.xml","expected_names":["same","same"],"reproduction_commands":[],"service_checks":[]}],"limitations":[]});
         assert!(contracts::validate("test-developer", &artifact).is_err());
         artifact["tests"][0]["expected_names"] = json!(["same"]);
         contracts::validate("test-developer", &artifact).unwrap();
@@ -175,7 +191,7 @@ mod tests {
 
     #[test]
     fn links_reject_unknown_sources_candidates_and_tests() {
-        let artifacts = json!({"code-explorer":{"references":[{"id":"source-1"}]},"bug-hunter":{"candidates":[{"id":"bug-1"}]},"test-designer":{"plans":[{"test_id":"test-1","candidate_id":"bug-1","blocked_reason":null}]},"test-developer":{"tests":[{"id":"test-1","candidate_id":"bug-1"}]}});
+        let artifacts = json!({"code-explorer":{"real_services":[],"references":[{"id":"source-1"}]},"bug-hunter":{"candidates":[{"id":"bug-1"}]},"test-designer":{"plans":[{"test_id":"test-1","candidate_id":"bug-1","blocked_reason":null,"real_services":[]}]},"test-developer":{"tests":[{"id":"test-1","candidate_id":"bug-1"}]}});
         assert!(
             contracts::validate_links(
                 "bug-hunter",
@@ -247,17 +263,17 @@ mod tests {
             "bug-hunter":{"candidates":[{"id":"bug-1"},{"id":"bug-2"}]},
             "test-designer":{"plans":[
                 {"test_id":"blocked-test","candidate_id":"bug-1","blocked_reason":"missing environment"},
-                {"test_id":"active-test","candidate_id":"bug-2","blocked_reason":null}
+                {"test_id":"active-test","candidate_id":"bug-2","blocked_reason":null,"real_services":[]}
             ]},
-            "test-developer":{"tests":[{"id":"active-test","candidate_id":"bug-2"}]}
+            "test-developer":{"tests":[{"id":"active-test","candidate_id":"bug-2","service_checks":[]}]}
         });
         contracts::validate_links(
             "test-developer",
-            &json!({"tests":[{"id":"active-test","candidate_id":"bug-2"}]}),
+            &json!({"tests":[{"id":"active-test","candidate_id":"bug-2","service_checks":[]}]}),
             &artifacts,
         )
         .unwrap();
-        assert!(contracts::validate_links("test-developer", &json!({"tests":[{"id":"blocked-test","candidate_id":"bug-1"},{"id":"active-test","candidate_id":"bug-2"}]}), &artifacts).is_err());
+        assert!(contracts::validate_links("test-developer", &json!({"tests":[{"id":"blocked-test","candidate_id":"bug-1"},{"id":"active-test","candidate_id":"bug-2","service_checks":[]}]}), &artifacts).is_err());
         assert!(
             contracts::validate_links(
                 "test-validator",

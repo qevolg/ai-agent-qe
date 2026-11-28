@@ -12,6 +12,8 @@ Request → inspect → find candidates → design tests → implement → valid
 
 AAQE protects production code, preserves execution evidence and retains the environment for replay. Tests use the project's existing conventions. No specific language, framework or test-report format is required. Generated tests must help reach **80% production line coverage** of the audited module, counting existing tests too.
 
+**Mocks are prohibited.** TDengine, InfluxDB and other target services, including required source and sink dependencies, must run as real services in the audit's Docker Compose project. Tests, baselines and coverage runs must not use mocks, stubs, spies, fake clients/servers, replacement transports or response replay. Each test retains Docker container/image identities and protocol checks; independent validation must also verify that the test actually uses these services. Unavailable services block verification. Historical mock tests must be redesigned. Code without external service dependencies can test its actual implementation directly.
+
 ## Install
 
 **Linux only.** Release binaries support x86_64:

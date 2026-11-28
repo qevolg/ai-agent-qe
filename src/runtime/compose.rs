@@ -519,6 +519,66 @@ impl ComposeEnvironment {
         Ok(())
     }
 
+    pub fn execute_service_check(
+        &self,
+        command: &[String],
+        service: &str,
+        test_id: &str,
+        timeout: u64,
+    ) -> Result<Value> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
+        let definition = read_json(&self.env_dir.join("compose.resolved.json"))?;
+        ensure!(
+            Some(service) != self.spec["runner_service"].as_str()
+                && definition["services"].get(service).is_some(),
+            "Required real service must be a Docker Compose target, separate from the runner: {service}"
+        );
+        let mut argv = self.arguments(true)?;
+        argv.extend([
+            "ps".into(),
+            "--all".into(),
+            "--quiet".into(),
+            service.into(),
+        ]);
+        let identities = self.checked_until(&argv, "service-containers", Some(deadline))?;
+        let ids: Vec<_> = identities.stdout.split_whitespace().collect();
+        ensure!(
+            !ids.is_empty(),
+            "No Docker container was started for real service: {service}"
+        );
+        let mut containers = Vec::new();
+        for id in ids {
+            let inspected = self.checked_until(
+                &["docker".into(), "inspect".into(), "--format".into(),
+                    r#"{"running":{{json .State.Running}},"image_id":{{json .Image}},"image":{{json .Config.Image}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}}}"#.into(),
+                    id.into()],
+                "service-identity", Some(deadline)
+            )?;
+            let mut container: Value = serde_json::from_str(inspected.stdout.trim())?;
+            ensure!(
+                container["project"] == self.project && container["service"] == service,
+                "Real-service container does not belong to this audit's Docker Compose project"
+            );
+            container["id"] = json!(id);
+            containers.push(container);
+        }
+        let duration = deadline.saturating_duration_since(std::time::Instant::now());
+        let remaining = duration.as_secs() + u64::from(duration.subsec_nanos() > 0);
+        ensure!(
+            remaining > 0,
+            "Real-service inspection exhausted the test deadline"
+        );
+        let mut record = self.execute_test(command, test_id, remaining)?;
+        record["service"] = json!(service);
+        record["docker"] =
+            json!({"project":self.project,"service":service,"containers":containers});
+        write_json(
+            &Path::new(record["directory"].as_str().unwrap()).join("execution.json"),
+            &record,
+        )?;
+        Ok(record)
+    }
+
     pub fn execute_test(&self, command: &[String], test_id: &str, timeout: u64) -> Result<Value> {
         self.ensure_no_pending_setup()?;
         let attempt = Uuid::new_v4().simple().to_string();

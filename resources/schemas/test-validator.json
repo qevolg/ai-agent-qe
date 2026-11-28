@@ -65,12 +65,20 @@
               },
               "infrastructure_failure": {
                 "type": "boolean"
+              },
+              "no_mocks": {
+                "type": "boolean"
+              },
+              "real_services_verified": {
+                "type": "boolean"
               }
             },
             "required": [
               "executed",
               "assertion_failed",
-              "infrastructure_failure"
+              "infrastructure_failure",
+              "no_mocks",
+              "real_services_verified"
             ],
             "additionalProperties": false
           }

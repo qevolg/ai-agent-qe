@@ -383,13 +383,16 @@ impl AuditHarness<'_> {
                     test,
                     self.config.test_timeout.min(self.remaining_time()?),
                 )?;
+                if record["target_executed"] != true {
+                    failures.push(format!("{}: real Docker service unavailable", test["id"]));
+                }
                 self.execution["tests"].as_array_mut().unwrap().push(record);
                 self.save_execution(attempt)?;
                 self.gate()?.verify_worktree()?;
             }
             ensure!(
                 failures.is_empty(),
-                "Applicable baseline failed; target verification is blocked: {}",
+                "Applicable baseline or real Docker service failed; target verification is blocked: {}",
                 failures.join("; ")
             );
             let coverage = (|| -> Result<Value> {

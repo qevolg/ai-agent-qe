@@ -58,7 +58,7 @@ impl AuditAgent for Agent {
     ) -> Result<Value> {
         let mut output = match stage {
             "code-explorer" => {
-                json!({"summary":"explored","scope":["app.rs"],"references":[{"id":"source","path":if self.mode=="invented" {"missing.rs"} else {"app.rs"},"line":1,"claim":"one"}],"uncertainties":[],"environment":{"compose_files":["compose.yaml"],"services":["runner"],"runner_service":"runner","runner_workdir":"/workspace","external_containers":[],"readiness_timeout":30},"baseline":[["baseline"]]})
+                json!({"summary":"explored","scope":["app.rs"],"references":[{"id":"source","path":if self.mode=="invented" {"missing.rs"} else {"app.rs"},"line":1,"claim":"one"}],"uncertainties":[],"real_services":[],"environment":{"compose_files":["compose.yaml"],"services":["runner"],"runner_service":"runner","runner_workdir":"/workspace","external_containers":[],"readiness_timeout":30},"baseline":[["baseline"]]})
             }
             "bug-hunter" => {
                 if self.mode == "fail" {
@@ -67,13 +67,13 @@ impl AuditAgent for Agent {
                 json!({"summary":"candidate","candidates":if self.mode=="empty" {json!([])} else {json!([{"id":"bug","title":"wrong value","expected":"two","observed":"one","trigger":"value()","evidence_ids":["source"],"confidence":"high"}])},"excluded_areas":[]})
             }
             "test-designer" => {
-                json!({"summary":"plan","plans":[{"candidate_id":"bug","test_id":"test","expectation":"two","oracle":"requirement","steps":["call"],"reproduction":["rerun"],"blocked_reason":if self.mode=="blocked" {json!("no requirement")} else {Value::Null}}]})
+                json!({"summary":"plan","plans":[{"candidate_id":"bug","test_id":"test","expectation":"two","oracle":"requirement","steps":["call"],"reproduction":["rerun"],"real_services":[],"blocked_reason":if self.mode=="blocked" {json!("no requirement")} else {Value::Null}}]})
             }
             "test-developer" => {
-                json!({"summary":"test","coverage":{"command":["coverage"],"report":"coverage.json","files":["app.rs"]},"patch":"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1 @@\n+#[test] fn regression() { assert!(false); }\n","tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[]}],"limitations":[]})
+                json!({"summary":"test","coverage":{"command":["coverage"],"report":"coverage.json","files":["app.rs"]},"patch":"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1 @@\n+#[test] fn regression() { assert!(false); }\n","tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[],"service_checks":[]}],"limitations":[]})
             }
             "test-validator" => {
-                json!({"summary":"checked","coverage_assessment":{"scope_valid":true,"measurement_valid":true,"meaningful_assertions":true,"rationale":"Reviewed native evidence and complete production scope"},"verdicts":[{"candidate_id":"bug","test_ids":["test"],"status":"confirmed","assessment":{"executed":true,"assertion_failed":true,"infrastructure_failure":false},"rationale":"assertion failed","evidence":[if self.mode=="fabricated" {"made-up.json".to_owned()} else {format!("{}/execution.json",inputs["execution"]["tests"][0]["directory"].as_str().unwrap())}]}]})
+                json!({"summary":"checked","coverage_assessment":{"scope_valid":true,"measurement_valid":true,"meaningful_assertions":true,"rationale":"Reviewed native evidence and complete production scope"},"verdicts":[{"candidate_id":"bug","test_ids":["test"],"status":"confirmed","assessment":{"executed":true,"assertion_failed":true,"infrastructure_failure":false,"no_mocks":true,"real_services_verified":true},"rationale":"assertion failed","evidence":[if self.mode=="fabricated" {"made-up.json".to_owned()} else {format!("{}/execution.json",inputs["execution"]["tests"][0]["directory"].as_str().unwrap())}]}]})
             }
             _ => bail!("unexpected stage"),
         };
@@ -267,7 +267,14 @@ fn workflow_preserves_stages_baseline_patch_evidence_and_partial_reports() {
                 assert!(state["error"].is_string());
             }
             _ => {
-                assert_eq!(state["status"], "completed");
+                assert_eq!(
+                    state["status"],
+                    if mode == "normal" || mode == "float-line" {
+                        "completed"
+                    } else {
+                        "blocked"
+                    }
+                );
                 assert_eq!(state["stages"].as_array().unwrap().len(), 5);
                 assert_eq!(
                     report["verdicts"][0]["status"],

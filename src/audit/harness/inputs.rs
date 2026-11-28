@@ -4,6 +4,9 @@ use serde_json::{Value, json};
 
 pub(crate) fn artifact_summary(value: &Value) -> Value {
     let mut view = json!({"summary":value["summary"].as_str().map(|text|excerpt(text,2048))});
+    if value["real_services"].is_array() {
+        view["real_services"] = value["real_services"].clone();
+    }
     for key in ["references", "candidates", "plans", "tests", "verdicts"] {
         if let Some(items) = value[key].as_array() {
             let preview: Vec<_> = items
@@ -21,6 +24,7 @@ pub(crate) fn artifact_summary(value: &Value) -> Value {
                         "confidence",
                         "blocked_reason",
                         "execution_blocked_reason",
+                        "real_services",
                     ] {
                         if let Some(value) = item.get(field) {
                             entry[field] = value.clone();
@@ -43,7 +47,9 @@ pub(crate) fn execution_summary(value: &Value) -> Value {
         let preview: Vec<_> = items.iter().take(20).map(|item| {
             json!({"test_id":item["test_id"],"directory":item["directory"],
                 "result":{"returncode":item["result"]["returncode"],"timed_out":item["result"]["timed_out"],"stderr":item["result"]["stderr"].as_str().map(|text|excerpt(text,1024))},
-                "evidence":item["evidence"],"error":item["error"]})
+                "evidence":item["evidence"],"error":item["error"],
+                "target_executed":item["target_executed"],"required_services":item["required_services"],
+                "service_checks":item["service_checks"].as_array().map(|checks| checks.iter().map(|check| json!({"service":check["service"],"directory":check["directory"],"result":{"returncode":check["result"]["returncode"],"timed_out":check["result"]["timed_out"]}})).collect::<Vec<_>>())})
         }).collect();
         view[key] =
             json!({"total":items.len(),"items":preview,"has_more":items.len()>preview.len()});

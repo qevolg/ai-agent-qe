@@ -206,16 +206,16 @@ impl AuditAgent for Agent {
         }
         let mut output = match stage {
             "code-explorer" => {
-                json!({"summary":"scope","scope":["app.rs"],"references":[{"id":"ref","path":"app.rs","line":1,"claim":"one"}],"uncertainties":[],"environment":{"compose_files":[],"services":[],"runner_service":"runner","runner_workdir":"/workspace","external_containers":[],"readiness_timeout":30},"baseline":[["baseline"]]})
+                json!({"summary":"scope","scope":["app.rs"],"references":[{"id":"ref","path":"app.rs","line":1,"claim":"one"}],"uncertainties":[],"real_services":[],"environment":{"compose_files":[],"services":[],"runner_service":"runner","runner_workdir":"/workspace","external_containers":[],"readiness_timeout":30},"baseline":[["baseline"]]})
             }
             "bug-hunter" => {
                 json!({"summary":"candidate","candidates":[{"id":"bug","title":"wrong value","expected":"two","observed":"one","trigger":"value()","evidence_ids":["ref"],"confidence":"high"}],"excluded_areas":[]})
             }
             "test-designer" => {
-                json!({"summary":"plan","plans":[{"candidate_id":"bug","test_id":"test","expectation":"two","oracle":"documented behavior","steps":["call"],"reproduction":["rerun"],"blocked_reason":null}]})
+                json!({"summary":"plan","plans":[{"candidate_id":"bug","test_id":"test","expectation":"two","oracle":"documented behavior","steps":["call"],"reproduction":["rerun"],"blocked_reason":null,"real_services":[]}]})
             }
             "test-developer" => {
-                json!({"summary":"patch","coverage":{"command":["coverage"],"report":"coverage.json","files":["app.rs"]},"patch":if self.mode=="rollback" && retry {"--- a/app.rs\n+++ b/app.rs\n@@ -1 +1 @@\n-pub fn value() -> i32 { 1 }\n+pub fn value() -> i32 { 2 }\n"} else if retry {"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1,2 @@\n+// repaired regression\n+#[test] fn regression() { assert!(false); }\n"} else {"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1 @@\n+#[test] fn regression() { assert!(false); }\n"},"tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[]}],"limitations":[]})
+                json!({"summary":"patch","coverage":{"command":["coverage"],"report":"coverage.json","files":["app.rs"]},"patch":if self.mode=="rollback" && retry {"--- a/app.rs\n+++ b/app.rs\n@@ -1 +1 @@\n-pub fn value() -> i32 { 1 }\n+pub fn value() -> i32 { 2 }\n"} else if retry {"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1,2 @@\n+// repaired regression\n+#[test] fn regression() { assert!(false); }\n"} else {"--- /dev/null\n+++ b/tests/generated.rs\n@@ -0,0 +1 @@\n+#[test] fn regression() { assert!(false); }\n"},"tests":[{"id":"test","candidate_id":"bug","command":["test"],"report":"junit.xml","expected_names":["test"],"reproduction_commands":[],"service_checks":[]}],"limitations":[]})
             }
             "test-validator" => {
                 let evidence = if self.mode == "stale" {
@@ -235,7 +235,7 @@ impl AuditAgent for Agent {
                             .unwrap()
                     )
                 };
-                json!({"summary":"review","coverage_assessment":{"scope_valid":true,"measurement_valid":true,"meaningful_assertions":true,"rationale":"Reviewed native evidence and complete production scope"},"verdicts":[{"candidate_id":"bug","test_ids":["test"],"status":"confirmed","assessment":{"executed":true,"assertion_failed":true,"infrastructure_failure":false},"rationale":"target failed","evidence":[evidence]}]})
+                json!({"summary":"review","coverage_assessment":{"scope_valid":true,"measurement_valid":true,"meaningful_assertions":true,"rationale":"Reviewed native evidence and complete production scope"},"verdicts":[{"candidate_id":"bug","test_ids":["test"],"status":"confirmed","assessment":{"executed":true,"assertion_failed":true,"infrastructure_failure":false,"no_mocks":true,"real_services_verified":true},"rationale":"target failed","evidence":[evidence]}]})
             }
             _ => bail!("unexpected stage"),
         };
@@ -380,7 +380,7 @@ fn stage_budget_and_prerequisites_are_enforced_by_harness() {
 #[test]
 fn old_execution_paths_cannot_confirm_a_revised_test() {
     let (_temp, state, directory) = audit("stale");
-    assert_eq!(state["status"], "completed", "{state}");
+    assert_eq!(state["status"], "blocked", "{state}");
     assert_eq!(
         read_json(&directory.join("report.json")).unwrap()["verdicts"][0]["status"],
         "blocked"
@@ -651,7 +651,7 @@ fn blocked_plans_offer_validator_and_record_dispatch_rejection() {
 #[test]
 fn verdict_requires_every_test_and_only_its_applicable_baseline() {
     let artifact = json!({"verdicts":[{"candidate_id":"bug","test_ids":["a","b"],"status":"confirmed","rationale":"both","evidence":["/a/execution.json"]}]});
-    let mut execution = json!({"baseline":[{"for_test_id":"a","result":{"returncode":0}}],"tests":[{"test_id":"a","directory":"/a","junit":{"complete":true,"cases":[{"status":"failed"}]}}]});
+    let mut execution = json!({"baseline":[{"for_test_id":"a","result":{"returncode":0}}],"tests":[{"test_id":"a","directory":"/a","required_services":[],"service_checks":[],"junit":{"complete":true,"cases":[{"status":"failed"}]}}]});
     assert_eq!(
         aaqe::audit::workflow::grounded_verdicts(&artifact, &execution)[0]["status"],
         "blocked"
@@ -660,7 +660,7 @@ fn verdict_requires_every_test_and_only_its_applicable_baseline() {
         .as_array_mut()
         .unwrap()
         .push(json!({"for_test_id":"b","result":{"returncode":1}}));
-    let single = json!({"verdicts":[{"candidate_id":"bug","test_ids":["a"],"status":"confirmed","rationale":"a","evidence":["/a/execution.json"]}]});
+    let single = json!({"verdicts":[{"candidate_id":"bug","test_ids":["a"],"status":"confirmed","assessment":{"executed":true,"assertion_failed":true,"infrastructure_failure":false,"no_mocks":true,"real_services_verified":true},"rationale":"a","evidence":["/a/execution.json"]}]});
     assert_eq!(
         aaqe::audit::workflow::grounded_verdicts(&single, &execution)[0]["status"],
         "confirmed"

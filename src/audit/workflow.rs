@@ -13,19 +13,88 @@ use std::{collections::HashSet, path::Path};
 use super::interfaces::{AuditAgent, RuntimeFactory, TestRuntime};
 
 pub fn collect_test(runtime: &dyn TestRuntime, test: &Value, timeout: u64) -> Result<Value> {
-    let mut record = runtime.execute_test(
-        &strings(&test["command"]),
-        test["id"].as_str().context("Missing test identity")?,
-        timeout,
+    let id = test["id"].as_str().context("Missing test identity")?;
+    let specifications = test["service_checks"].as_array().context(
+        "Missing real service_checks; historical tests must be redesigned under the no-mock policy",
     )?;
+    let started = std::time::Instant::now();
+    let remaining = || -> Result<u64> {
+        let remaining = timeout.saturating_sub(started.elapsed().as_secs());
+        ensure!(
+            remaining > 0,
+            "Test and real-service checks exhausted their deadline"
+        );
+        Ok(remaining)
+    };
+    let mut checks = Vec::new();
+    let mut unavailable = None;
+    for (index, specification) in specifications.iter().enumerate() {
+        let service = specification["service"]
+            .as_str()
+            .context("Missing real service identity")?;
+        let command = crate::runtime::compose::command_list(
+            &json!([specification["command"]]),
+            "service check",
+        )?;
+        let mut check = runtime.execute_service_check(
+            &command[0],
+            service,
+            &format!("{id}-service-{}", index + 1),
+            remaining()?,
+        )?;
+        check["service"] = json!(service);
+        write_json(
+            &Path::new(
+                check["directory"]
+                    .as_str()
+                    .context("Missing service evidence directory")?,
+            )
+            .join("execution.json"),
+            &check,
+        )?;
+        let healthy = crate::guards::real_services::check_verified(&check);
+        checks.push(check.clone());
+        if !healthy {
+            unavailable = Some(check);
+            break;
+        }
+    }
+    let target_executed = unavailable.is_none();
+    let mut record = if let Some(mut check) = unavailable {
+        let source = Path::new(
+            check["directory"]
+                .as_str()
+                .context("Missing service evidence directory")?,
+        );
+        let directory = source
+            .parent()
+            .context("Missing execution root")?
+            .join(format!("blocked-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir(&directory)?;
+        check["service_execution_record"] = json!(source.join("execution.json"));
+        check["directory"] = json!(directory);
+        check
+    } else {
+        runtime.execute_test(&strings(&test["command"]), id, remaining()?)?
+    };
+    record["test_id"] = json!(id);
     record["candidate_id"] = test["candidate_id"].clone();
+    record["target_executed"] = json!(target_executed);
+    record["required_services"] = json!(
+        specifications
+            .iter()
+            .map(|check| check["service"].clone())
+            .collect::<Vec<_>>()
+    );
+    record["service_checks"] = json!(checks);
     let code = record["result"]["returncode"].as_i64();
-    let complete = code
-        .is_some_and(|code| code >= 0 && ![124, 125, 126, 127, 137, 143].contains(&code))
+    let complete = target_executed
+        && code.is_some_and(|code| code >= 0 && ![124, 125, 126, 127, 137, 143].contains(&code))
         && record["result"]["timed_out"] != true;
     record["evidence"] = json!({
         "complete": complete,
-        "error": if complete { None } else { Some("execution_interrupted_or_start_failed") }
+        "error": if !target_executed { Some("real_service_unavailable") }
+            else if complete { None } else { Some("execution_interrupted_or_start_failed") }
     });
     write_json(
         &Path::new(record["directory"].as_str().unwrap()).join("execution.json"),
@@ -78,7 +147,10 @@ pub fn grounded_verdicts(artifact: &Value, execution: &Value) -> Value {
                     .into_owned()
             })
             .collect();
-        if verdict["status"] == "confirmed" || verdict["status"] == "not_reproduced" {
+        if matches!(
+            verdict["status"].as_str(),
+            Some("confirmed" | "not_reproduced" | "flaky")
+        ) {
             let evidence = strings(&verdict["evidence"]);
             let assessment = &verdict["assessment"];
             let legacy = supporting.iter().all(|record| record["evidence"].is_null());
@@ -89,6 +161,11 @@ pub fn grounded_verdicts(artifact: &Value, execution: &Value) -> Value {
                 || (legacy && assessment.is_null());
             let valid = complete
                 && assessed
+                && assessment["no_mocks"] == true
+                && assessment["real_services_verified"] == true
+                && supporting
+                    .iter()
+                    .all(|record| crate::guards::real_services::checks_verified(record))
                 && healthy
                 && !evidence.is_empty()
                 && evidence.iter().all(|p| allowed.contains(p))
@@ -100,17 +177,26 @@ pub fn grounded_verdicts(artifact: &Value, execution: &Value) -> Value {
                                 .is_some_and(|code| code != 0)
                                 || legacy
                         })
-                } else {
+                } else if verdict["status"] == "not_reproduced" {
                     !assertion_failed
                         && supporting
                             .iter()
                             .all(|record| record["result"]["returncode"] == 0 || legacy)
+                } else {
+                    true
                 });
-            if !valid {
+            if assessment["no_mocks"] == false {
+                verdict["agent_status"] = verdict["status"].clone();
+                verdict["status"] = json!("invalid_test");
+                verdict["rationale"] = json!(format!(
+                    "No-mock policy: test substitutes a real implementation or service. Agent assessment: {}",
+                    verdict["rationale"].as_str().unwrap_or("")
+                ));
+            } else if !valid {
                 verdict["agent_status"] = verdict["status"].clone();
                 verdict["status"] = json!("blocked");
                 verdict["rationale"] = json!(format!(
-                    "Execution gate: incomplete, inconsistent or absent target/baseline evidence. Agent assessment: {}",
+                    "Execution gate: incomplete, inconsistent or absent target/baseline evidence or real-service/no-mock verification. Agent assessment: {}",
                     verdict["rationale"].as_str().unwrap_or("")
                 ));
             }
@@ -274,8 +360,12 @@ pub fn reproduce(store: &Store, state: &mut Value, case_id: Option<&str>) -> Res
             state["reproductions"][entry]["records"]
                 .as_array_mut()
                 .unwrap()
-                .push(record);
+                .push(record.clone());
             save_attempt(state)?;
+            ensure!(
+                record["target_executed"] == true,
+                "Real Docker service check failed; target reproduction was not executed"
+            );
             gate.verify_worktree()?;
         }
         if artifact["coverage"].is_object() {
@@ -342,41 +432,15 @@ pub fn reproduce(store: &Store, state: &mut Value, case_id: Option<&str>) -> Res
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_test, grounded_verdicts};
-    use crate::audit::interfaces::TestRuntime;
-    use anyhow::Result;
+    use super::grounded_verdicts;
     use serde_json::json;
 
     #[test]
     fn execution_evidence_does_not_require_a_framework_report() {
-        struct Runtime(std::path::PathBuf);
-
-        impl TestRuntime for Runtime {
-            fn start(&self) -> Result<()> {
-                Ok(())
-            }
-
-            fn logs(&self) -> Result<()> {
-                Ok(())
-            }
-
-            fn execute_test(&self, _: &[String], id: &str, _: u64) -> Result<serde_json::Value> {
-                Ok(
-                    json!({"test_id":id,"directory":self.0,"result":{"returncode":1,"timed_out":false,"stdout":"regression executed: assertion failed","stderr":""}}),
-                )
-            }
-        }
-
-        let directory = tempfile::tempdir().unwrap();
-        let record = collect_test(
-            &Runtime(directory.path().into()),
-            &json!({"id":"regression","candidate_id":"bug","command":["test"]}),
-            10,
-        )
-        .unwrap();
-        assert_eq!(record["evidence"]["complete"], true);
-        assert!(record.get("junit").is_none());
-        let artifact = json!({"verdicts":[{"candidate_id":"bug","test_ids":["regression"],"status":"confirmed","rationale":"assertion failed","assessment":{"executed":true,"assertion_failed":true,"infrastructure_failure":false},"evidence":[directory.path().join("execution.json")]}]});
+        // Exercise verdict validation with input data; Docker execution is
+        // covered by tests/real_services.rs against actual database servers.
+        let record = json!({"test_id":"regression","directory":"/run/target","result":{"returncode":1,"timed_out":false},"evidence":{"complete":true},"required_services":[],"service_checks":[]});
+        let artifact = json!({"verdicts":[{"candidate_id":"bug","test_ids":["regression"],"status":"confirmed","rationale":"assertion failed","assessment":{"executed":true,"assertion_failed":true,"infrastructure_failure":false,"no_mocks":true,"real_services_verified":true},"evidence":["/run/target/execution.json"]}]});
         let execution = json!({"baseline":[{"result":{"returncode":0}}],"tests":[record]});
         assert_eq!(
             grounded_verdicts(&artifact, &execution)[0]["status"],
@@ -403,14 +467,14 @@ mod tests {
 
     #[test]
     fn execution_gate_requires_real_matching_failure_and_healthy_baseline() {
-        let artifact = json!({"verdicts":[{"candidate_id":"bug", "test_ids":["test"], "status":"confirmed", "rationale":"failed assertion", "evidence":["/run/attempt/execution.json"]}]});
-        let execution = json!({"baseline":[{"result":{"returncode":0}}],"tests":[{"test_id":"test", "directory":"/run/attempt", "junit":{"complete":true,"cases":[{"status":"failed"}]}}]});
+        let artifact = json!({"verdicts":[{"candidate_id":"bug", "test_ids":["test"], "status":"confirmed", "rationale":"failed assertion", "assessment":{"executed":true,"assertion_failed":true,"infrastructure_failure":false,"no_mocks":true,"real_services_verified":true},"evidence":["/run/attempt/execution.json"]}]});
+        let execution = json!({"baseline":[{"result":{"returncode":0}}],"tests":[{"test_id":"test", "directory":"/run/attempt", "result":{"returncode":1},"required_services":[],"service_checks":[],"evidence":{"complete":true}}]});
         assert_eq!(
             grounded_verdicts(&artifact, &execution)[0]["status"],
             "confirmed"
         );
         let mut missing = execution.clone();
-        missing["tests"][0]["junit"]["complete"] = json!(false);
+        missing["tests"][0]["evidence"]["complete"] = json!(false);
         assert_eq!(
             grounded_verdicts(&artifact, &missing)[0]["status"],
             "blocked"

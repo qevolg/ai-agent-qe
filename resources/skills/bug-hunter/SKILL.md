@@ -14,6 +14,7 @@ User request, module analysis, reference IDs, examined source code and existing 
 3. For each suspected defect, identify a reachable trigger, expected outcome, observed code behavior and source reference IDs.
 4. Check existing tests and nearby paths for counterevidence. Remove candidates contradicted by available evidence.
 5. Record coverage limits. Do not mistake missing tests alone for a defect.
+6. Require real implementations and real target services started in Docker for runtime verification. Never propose replacing SDKs, clients, transport or services with mocks, stubs, spies, fake servers or response replay. Historical mock results remain unverified under this policy.
 
 # Outputs
 
